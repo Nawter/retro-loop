@@ -41,10 +41,10 @@ The facilitator advances phases manually via a single "Next phase" button. Every
 | Output | Decisions + action items |
 | Recording | Not in the MVP — paste a link to the recording into a decision entry |
 | Join model | Full multiplayer, own devices, live sync |
+| Sync backend | Custom WebSockets on FastAPI, SQLite for state — see `_docs/tasks.md` |
 
 ## Open questions for later
 - Identity: name-on-join vs. real accounts?
-- Sync backend choice (Firebase / Supabase / Liveblocks / custom WebSockets)?
 - Does clustering affect the vote tally, or is it discussion-only? (Currently: votes are per-card; clusters guide discussion.)
 - Persistence horizon — keep past retros as history, or one-off sessions?
 - Facilitator assignment — first to join, or explicitly chosen?

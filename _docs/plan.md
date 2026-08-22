@@ -17,15 +17,13 @@ The facilitator advances phases manually via a single "Next phase" button. Every
 3. **Cluster** — anyone can drag cards into groups on a shared, live board.
 4. **Vote** — each person gets 3 votes, cast on individual cards, stackable on one card.
 5. **Discuss & record** — cards sorted by vote count; team logs decisions + action items.
-6. **Post-meeting** — facilitator can upload audio, video, or a transcript. No built-in recording in v1.
 
 ## What full multiplayer requires
 - **Real-time sync** — cards, clusters, votes, and phase changes update live across devices (WebSockets, or a service like Firebase / Supabase / Liveblocks).
 - **Sessions** — a join code or link so the right people land in the same retro.
 - **Identity** — lightweight (name on join) or real accounts.
-- **Persistent storage** — cards, votes, decisions, and uploads survive refresh.
+- **Persistent storage** — cards, votes, and decisions survive refresh.
 - **Facilitator role** — controls who can advance phases and trigger the reveal.
-- **File uploads** — storage for post-meeting media.
 - **Conflict handling** — e.g. two people dragging the same card; vote limits enforced server-side.
 
 ## Decisions locked in
@@ -41,7 +39,7 @@ The facilitator advances phases manually via a single "Next phase" button. Every
 | Clustering | Anyone can drag |
 | Voting | 3 votes per person, on individual cards, stackable |
 | Output | Decisions + action items |
-| Recording | Upload audio/video/transcript post-meeting; no built-in recording in v1 |
+| Recording | Not in the MVP — paste a link to the recording into a decision entry |
 | Join model | Full multiplayer, own devices, live sync |
 
 ## Open questions for later

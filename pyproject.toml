@@ -1,0 +1,19 @@
+[project]
+name = "retro-loop"
+version = "0.1.0"
+description = "A weekly, facilitated retrospective tool for a single project team"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn>=0.32",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "httpx>=0.28",  # required by fastapi.testclient
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

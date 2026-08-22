@@ -1,145 +1,307 @@
 # Weekly Retro Tool — Backlog
 
-**Stack:** FastAPI + WebSockets + SQLite (stdlib `sqlite3`, no ORM), single static
-HTML/JS frontend served by the same app, deployed as one process.
+**Stack:** FastAPI + WebSockets + SQLite (stdlib `sqlite3`, no ORM), one static
+HTML/JS/CSS frontend served by the same app, deployed as one process.
+Dependencies live in `pyproject.toml` and are installed with `uv sync`.
 
-Tasks are ordered so the stack builds bottom-up, but each is written to be picked
-up cold and finished in one sitting. Scope of the tool is in `_docs/plan.md`.
+Each task below becomes one GitHub issue, filed with `_docs/task-template.md`
+and worked one at a time (`_docs/process.md`). Scope of the tool is in
+`_docs/plan.md`, test rules in `_docs/testing-guidelines.md`, UI rules in
+`_docs/design-system.md`.
+
+Tasks are ordered so the stack builds bottom-up, but each is written to be
+picked up cold and finished in one sitting.
 
 ## 1. Project scaffold with a database that creates itself
-Goal: A runnable FastAPI app, a green `pytest`, and a SQLite file on first boot.
-Description: Scaffold with Poetry, pytest, mypy and the standard colour-coded
-Makefile (`help`/`deps`/`lint`/`check`/`test`). Add `GET /health` returning
-`{"status": "ok"}`. Write `schema.sql` with tables for `sessions`,
-`participants`, `cards`, `clusters`, `votes` and `decisions`, plus a helper that
-opens a `sqlite3` connection (row factory `sqlite3.Row`, foreign keys and WAL on)
-and executes the schema idempotently at startup. No ORM, no migration tool — the
-schema file is the source of truth. Add `.gitignore` covering `.env`, `*.db` and
-`__pycache__` before the first commit. Tests: `/health` returns 200, and a temp
-database has every table.
+
+### Goal
+A runnable FastAPI app, a green `uv run pytest`, and a SQLite file that creates
+itself on first boot.
+
+### Acceptance criteria
+- [ ] `uv sync` installs the project from `pyproject.toml`
+- [ ] `uv run pytest` passes on a clean checkout
+- [ ] `GET /health` returns 200 and `{"status": "ok"}`
+- [ ] `schema.sql` defines `sessions`, `participants`, `cards`, `clusters`,
+      `votes` and `decisions`, and a fresh database has all six
+- [ ] Connections open with row factory `sqlite3.Row`, foreign keys on and WAL on
+- [ ] Booting twice against the same file leaves the schema intact and loses no
+      rows
+- [ ] `.gitignore` covers `.env`, `*.db` and `__pycache__`, committed first
+
+### Out of scope
+- A migration tool. `schema.sql` is the source of truth until a released schema
+  has to change under real data.
+
+### Constraints
+- stdlib `sqlite3` only, no ORM
+- New dependencies need asking first (AGENTS.md)
 
 ## 2. Session lifecycle: create, join, advance phase
-Goal: People get into the same room, and one person can drive it.
-Description: `POST /sessions` creates a retro, generates a short human-typable
-join code (6 characters, no ambiguous glyphs) and returns the code plus a
-facilitator token. `POST /sessions/{code}/join` takes a display name, creates a
-participant row and returns a participant token used for all later calls. Tokens
-are opaque random strings stored in the database — no login, no password, no
-email. Store the current phase on the session row and allow it to advance in a
-fixed order: `write` → `reveal` → `cluster` → `vote` → `discuss` → `done`. Only a
-caller presenting the facilitator token may advance; anyone else is rejected.
+
+### Goal
+People get into the same room, and exactly one person can drive it.
+
+### Acceptance criteria
+- [ ] `POST /sessions` returns a join code and a facilitator token
+- [ ] The join code is 6 characters and contains no ambiguous glyphs
+      (no `0`/`O`, no `1`/`I`/`l`)
+- [ ] `POST /sessions/{code}/join` takes a display name, creates a participant
+      row and returns a participant token
+- [ ] Joining an unknown code is rejected
+- [ ] Phase advances in the fixed order
+      `write` -> `reveal` -> `cluster` -> `vote` -> `discuss` -> `done`
+- [ ] Advancing with the facilitator token succeeds; with a participant token
+      or no token it is rejected
+- [ ] Advancing past `done` is rejected
+
+### Out of scope
+- Real accounts, passwords, email. Name-on-join plus an opaque token is the
+  identity model for a single known team.
+
+### Constraints
+- Tokens are opaque random strings stored in the database and compared
+  server-side
+- The phase order is defined in one place, not repeated per endpoint
 
 ## 3. WebSocket room hub with full-state snapshot
-Goal: A message from one client reaches the room, and a fresh client sees the world.
-Description: Add `WS /ws/{code}` backed by an in-memory `dict[str, set[WebSocket]]`
-mapping join code to live connections. Handle connect, disconnect and broadcast,
-and make sure a dropped socket is removed from the set rather than crashing the
-fanout loop. On connect, read the session's phase, cards, clusters, vote counts
-and decisions from SQLite and send them as one `snapshot` message before any live
-events; every later change is a small incremental event, so the client applies
-snapshot-then-deltas. This is what makes refresh and laptop-sleep survivable, so
-it is worth getting right early. Test with two `TestClient` websocket connections
-in one room and a third in another.
+
+### Goal
+A message from one client reaches its room, and a fresh client sees the whole
+world before it sees any change to it.
+
+### Acceptance criteria
+- [ ] `WS /ws/{code}` accepts a connection and joins it to the room for that code
+- [ ] A message from one client reaches every other client in the same room and
+      no client in another room
+- [ ] On connect a client receives one `snapshot` message — phase, cards,
+      clusters, vote counts, decisions — before any live event
+- [ ] A dropped socket is removed from the room and does not break the fanout to
+      the sockets still connected
+- [ ] Tested with two `TestClient` sockets in one room and a third in another
+
+### Out of scope
+- Horizontal scaling, message brokers, presence indicators. One process owns the
+  rooms.
+
+### Constraints
+- Rooms are an in-memory `dict[str, set[WebSocket]]`
+- Every later change is a small incremental event: clients apply
+  snapshot-then-deltas, which is what makes refresh and laptop-sleep survivable
 
 ## 4. Cards: create, edit, delete, and pre-reveal visibility
-Goal: People can write Start/Stop/Continue cards, and nobody peeks early.
-Description: Add handlers for creating a card (column is one of
-`start`/`stop`/`continue`, plus text and an `anonymous` boolean), editing its text
-and deleting it. A participant may only modify their own cards — enforced
-server-side against the participant token, not in the UI. While the session is in
-the `write` phase each connection receives only its own author's cards; from
-`reveal` onward everyone receives all of them. That filter lives in the snapshot
-and broadcast paths — never send another person's card text and hide it in the
-client. Strip the author name from anonymous cards in every phase. Each accepted
-change writes to SQLite and broadcasts to the room.
+
+### Goal
+People write Start / Stop / Continue cards, and nobody reads anyone else's early.
+
+### Acceptance criteria
+- [ ] Create, edit and delete card handlers persist to SQLite and broadcast to
+      the room
+- [ ] `column` is one of `start`, `stop`, `continue`; anything else is rejected
+- [ ] A card carries text and an `anonymous` boolean
+- [ ] Editing or deleting someone else's card is rejected server-side against the
+      participant token
+- [ ] During `write`, a connection receives only its own author's cards — in the
+      snapshot and in broadcasts
+- [ ] From `reveal` onward every connection receives every card
+- [ ] Anonymous cards carry no author name in any phase, snapshot or broadcast
+
+### Out of scope
+- Rich text, attachments, per-card colours.
+
+### Constraints
+- Filtering happens before the message leaves the server. Never send another
+  person's card text and hide it in the client.
 
 ## 5. Clusters and decisions
-Goal: Cards can be grouped, and outcomes can be written down.
-Description: Add handlers to create a named cluster and move a card into or out of
-one (`cards.cluster_id`); anyone in the room may move any card, and simultaneous
-moves resolve last-write-wins — good enough for a small team in a call. Add
-handlers to add, edit and delete decision entries attached to the session, each
-with free text, a type (`decision` or `action`) and an optional owner name. Any
-participant can write them — a shared scribe pad, not a facilitator-only field.
-Persist and broadcast like every other change.
+
+### Goal
+Cards can be grouped, and the outcome of the discussion can be written down.
+
+### Acceptance criteria
+- [ ] A named cluster can be created and renamed, and both broadcast
+- [ ] A card can be moved into and out of a cluster via `cards.cluster_id`
+- [ ] Any participant can move any card
+- [ ] Two simultaneous moves resolve last-write-wins without an error
+- [ ] Decision entries can be added, edited and deleted, each with free text, a
+      type of `decision` or `action`, and an optional owner name
+- [ ] Any participant can write decisions, not only the facilitator
+- [ ] Every accepted change persists and broadcasts
+
+### Out of scope
+- Nested clusters, CRDT merge, voting on a cluster rather than a card.
+
+### Constraints
+- Last-write-wins is deliberate: good enough for a small team already on a call
 
 ## 6. Voting with a server-enforced budget
-Goal: Three votes per person, stackable, impossible to exceed.
-Description: Add a handler that records a vote by a participant on a card and one
-that removes it. Before inserting, count that participant's existing votes in the
-session and reject if they already hold three — enforced inside the database
-transaction, never in the client. Multiple votes from the same person on the same
-card are allowed. Broadcast updated per-card totals after each change. Test the
-rejection path.
+
+### Goal
+Three votes per person, stackable, impossible to exceed.
+
+### Acceptance criteria
+- [ ] A participant can cast a vote on a card and remove one they cast
+- [ ] Several votes from the same person on the same card are allowed
+- [ ] A fourth vote in a session is rejected, and the rejection has a test
+- [ ] The existing-vote count and the insert happen in the same transaction
+- [ ] Updated per-card totals broadcast after every change
+
+### Out of scope
+- Weighted votes, per-phase re-votes, changing the budget per session.
+
+### Constraints
+- The budget is enforced inside the database transaction, never in the client
 
 ## 7. Frontend shell: create, join, connect, facilitate
-Goal: One HTML page that gets you into a retro and stays connected.
-Description: Serve one static `index.html` (plus one JS and one CSS file) from the
-FastAPI app — no build step, no framework. A create screen returns the join code
-and a shareable link; a join screen asks for code and display name, calls the join
-endpoint, stores the token in `localStorage`, opens the WebSocket and renders
-whatever phase the snapshot reports. Keep the join code visible somewhere
-persistent so latecomers can be told it. Show a "Next phase" button and the name
-of the upcoming phase only to a client holding a facilitator token — server
-enforcement already exists, this is the UI on top. Everything after this task is
-rendering one more phase into this shell.
+
+### Goal
+One HTML page that gets you into a retro and keeps you there.
+
+### Acceptance criteria
+- [ ] One `index.html`, one `app.js` and one `app.css` served by the FastAPI app
+- [ ] A create screen shows the join code and a shareable link
+- [ ] A join screen takes code and display name, calls the join endpoint, stores
+      the token in `localStorage` and opens the WebSocket
+- [ ] The page renders whatever phase the snapshot reports, including on a cold
+      reload
+- [ ] The join code stays visible in every phase so latecomers can be told it
+- [ ] "Next phase" and the name of the upcoming phase render only for a client
+      holding a facilitator token
+
+### Out of scope
+- A framework, a bundler, npm, a second page. Everything after this task renders
+  one more phase into this shell.
+
+### Constraints
+- `_docs/design-system.md`
+- No build step
+- The facilitator-only button is UI on top of server enforcement that already
+  exists, not a substitute for it
 
 ## 8. Write and reveal UI
-Goal: People type cards into three columns, then everyone's appear at once.
-Description: Render Start / Stop / Continue columns with a composer in each and an
-anonymous checkbox per card. Submitting sends a create-card message over the
-WebSocket and the card appears when the server echoes it back — do not render
-optimistically, it makes reconnect states inconsistent. Support editing and
-deleting your own cards inline. On the `reveal` phase the same three columns
-render every card in the room with the author's name, except where the card is
-anonymous; reveal is read-only. Handle a snapshot arriving with dozens of cards
-without the layout collapsing.
+
+### Goal
+People type cards into three columns, then everyone's appear at once.
+
+### Acceptance criteria
+- [ ] Start / Stop / Continue columns, each with a composer and an anonymous
+      checkbox
+- [ ] Submitting sends a create-card message over the WebSocket
+- [ ] A card appears only when the server echoes it back
+- [ ] Your own cards can be edited and deleted inline
+- [ ] In `write` only your own cards render
+- [ ] In `reveal` every card in the room renders with its author's name, except
+      anonymous ones
+- [ ] `reveal` is read-only
+- [ ] A snapshot with dozens of cards scrolls rather than collapsing the layout
+
+### Out of scope
+- Reordering cards by hand, card templates, drafts.
+
+### Constraints
+- No optimistic rendering: it makes reconnect states inconsistent
 
 ## 9. Drag-to-cluster UI
-Goal: Cards can be dragged into groups and everyone sees it move.
-Description: Use native HTML5 drag-and-drop (`draggable`, `dragover`, `drop`) to
-let any participant drag a card onto another card or onto an empty cluster zone,
-sending a move message to the server. Render clusters as titled boxes with an
-editable name. Reconcile against inbound broadcast events so a card someone else
-moved jumps to its new group without a refresh.
+
+### Goal
+Cards can be dragged into groups and everyone sees them move.
+
+### Acceptance criteria
+- [ ] A card can be dragged onto another card or onto an empty cluster zone, and
+      the move is sent to the server
+- [ ] Clusters render as titled boxes with an editable name
+- [ ] A card someone else moved jumps to its new group without a refresh
+- [ ] A card can also be moved to a cluster without a pointer, since HTML5
+      drag-and-drop is mouse-only
+
+### Out of scope
+- Multi-select drag, auto-clustering, animation.
+
+### Constraints
+- Native HTML5 drag-and-drop (`draggable`, `dragover`, `drop`), no drag library
+- Inbound broadcast events are reconciled against local state, not ignored while
+  a drag is in progress
 
 ## 10. Voting and discussion UI
-Goal: Casting votes is obvious, then the team works top-down through the winners.
-Description: In the `vote` phase render a vote button and a running count on each
-card, plus a persistent "votes left: N" indicator; clicking sends a vote message,
-and a server rejection (budget exhausted) shows a quiet inline message rather than
-a blocking alert. Allow removing a vote you cast. In the `discuss` phase render
-the same cards sorted by vote count descending with their cluster shown alongside.
+
+### Goal
+Casting votes is obvious, then the team works top-down through the winners.
+
+### Acceptance criteria
+- [ ] In `vote`, every card shows a vote button and a running count
+- [ ] A persistent "votes left: N" indicator is visible throughout the phase
+- [ ] A vote you cast can be removed
+- [ ] A server rejection shows a quiet inline message in the live region, never
+      a blocking alert
+- [ ] In `discuss`, the same cards render sorted by vote count descending with
+      their cluster shown alongside
+
+### Out of scope
+- Charts, per-person vote breakdowns, revealing who voted for what.
+
+### Constraints
+- `_docs/design-system.md`
+- The count shown is the server's broadcast total, not a local tally
 
 ## 11. Decision pad and export
-Goal: The result of the retro leaves the meeting.
-Description: Below the discuss board, a shared list where anyone can add, edit and
-delete decisions and action items with an optional owner, updating live for
-everyone. Add a markdown export of the whole retro — cards by column, clusters,
-vote counts, decisions and actions — rendered client-side from current state so it
-can be copied and pasted elsewhere.
+
+### Goal
+The result of the retro leaves the meeting.
+
+### Acceptance criteria
+- [ ] A shared list below the discuss board where anyone can add, edit and delete
+      decisions and action items with an optional owner
+- [ ] Every change updates live for everyone in the room
+- [ ] A markdown export contains cards by column, clusters, vote counts,
+      decisions and actions
+- [ ] The export is rendered client-side from current state and can be copied
+
+### Out of scope
+- PDF, email, Jira/Linear integration. Copy-paste covers it until someone
+  complains.
 
 ## 12. Client reconnect and resync
-Goal: A closed laptop lid does not cost you the retro.
-Description: Detect WebSocket close on the client and reconnect with backoff,
-re-sending the stored participant token and re-applying the fresh snapshot over
-local state. Show a small "reconnecting" indicator while disconnected and queue
-nothing — actions dropped during a gap should fail visibly rather than replay
-late. Test by killing and restarting the server with a page open.
+
+### Goal
+A closed laptop lid does not cost you the retro.
+
+### Acceptance criteria
+- [ ] The client detects WebSocket close and reconnects with backoff
+- [ ] Reconnecting re-sends the stored participant token and re-applies the fresh
+      snapshot over local state
+- [ ] A "reconnecting" indicator shows while disconnected and is announced in the
+      live region
+- [ ] Actions attempted during a gap fail visibly and are not queued or replayed
+      late
+- [ ] Killing and restarting the server with a page open recovers the retro
+
+### Constraints
+- Snapshot-then-deltas from task 3 is what makes this cheap; do not add a
+  client-side event log to replace it
 
 ## 13. Dockerfile and deploy
-Goal: The app runs somewhere the team can reach it.
-Description: Write a Dockerfile running uvicorn and deploy to Fly.io or Railway
-with a persistent volume mounted for the SQLite file. Confirm the database
-survives a redeploy. Document the deploy command in the README.
+
+### Goal
+The app runs somewhere the team can reach it.
+
+### Acceptance criteria
+- [ ] A Dockerfile runs uvicorn and the image builds
+- [ ] Deployed to Fly.io or Railway with a persistent volume mounted at the
+      SQLite path
+- [ ] A redeploy leaves existing rows in place, confirmed by looking, not assumed
+- [ ] The deploy command is documented in the README
+
+### Out of scope
+- CI, staging, blue/green, a second region.
 
 ## Deliberately not in the MVP
+
 - **Post-meeting media upload** — an upload endpoint, a size cap, a second volume
   and an authenticated download, all to attach a file nobody reads during the
   retro. Paste a link into a decision entry until someone complains.
 - **Scheduled database backup** — add it the week after the first real retro that
   would have hurt to lose.
-- Retro history / listing past sessions — every row is kept, add the `SELECT` when
-  someone asks for it.
+- Retro history / listing past sessions — every row is kept, add the `SELECT`
+  when someone asks for it.
 - Real accounts — name-on-join plus an opaque token covers a single known team.
 - Built-in recording, transcription, and CRDT-based conflict resolution.

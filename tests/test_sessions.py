@@ -58,10 +58,23 @@ def test_join_unknown_code_is_rejected(client):
     assert join(client, "XXXXXX").status_code == 404
 
 
-def test_join_after_done_is_rejected(client):
+def test_join_allowed_in_every_phase_except_done(client):
     session = create(client)
-    finish(client, session)
-    assert join(client, session["code"]).status_code == 409
+    assert join(client, session["code"]).status_code == 201  # write
+    for phase in PHASES[1:]:
+        advance(client, session["code"], session["facilitator_token"])
+        expected = 409 if phase == "done" else 201
+        assert join(client, session["code"]).status_code == expected
+
+
+def test_code_collision_is_retried(client, monkeypatch):
+    import secrets
+
+    taken = create(client)["code"]
+    fallback = "BBBBBB" if taken != "BBBBBB" else "CCCCCC"
+    rigged = iter(taken + fallback)  # first roll collides, second is free
+    monkeypatch.setattr(secrets, "choice", lambda _: next(rigged))
+    assert create(client)["code"] == fallback
 
 
 def test_phase_advances_in_fixed_order(client):

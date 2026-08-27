@@ -57,16 +57,25 @@ label {
 }
 
 input,
+textarea,
 button {
   font: inherit;
   padding: var(--space-1) var(--space-2);
   border-radius: var(--radius);
 }
 
-input {
+input,
+textarea {
   border: thin solid var(--border);
   background: var(--surface);
   color: var(--text);
+}
+
+textarea {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
 }
 
 button {
@@ -83,6 +92,96 @@ button:disabled {
 
 form button {
   margin-top: var(--space-3);
+}
+
+button + button {
+  margin-left: var(--space-2);
+}
+
+/* The board: the sections stack; from 45em up (720 CSS pixels at the default font size,
+   a media query cannot read a token) they sit side by side and scroll inside. */
+main {
+  display: grid;
+  gap: var(--space-3);
+}
+
+ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+li {
+  margin-top: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface);
+  border: thin solid var(--border);
+  border-left: thick solid;
+  border-radius: var(--radius);
+}
+
+.start li {
+  border-left-color: var(--start);
+}
+
+.stop li {
+  border-left-color: var(--stop);
+}
+
+.continue li {
+  border-left-color: var(--continue);
+}
+
+li p {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+li p + p {
+  margin-top: var(--space-1);
+  color: var(--muted);
+}
+
+li > button {
+  margin-top: var(--space-2);
+}
+
+@media (min-width: 45em) {
+  body {
+    height: 100vh;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+  }
+
+  #app {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+
+  #app > button { /* the home view's Create button: a flex item would stretch */
+    align-self: flex-start;
+  }
+
+  main {
+    flex: 1;
+    min-height: 0;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  main h1 {
+    grid-column: 1 / -1;
+  }
+
+  section {
+    min-height: 0;
+    overflow-y: auto;
+    padding: 0 var(--space-2); /* room for the focus outline inside the clip */
+  }
 }
 
 a {

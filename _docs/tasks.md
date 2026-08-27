@@ -5,7 +5,9 @@ HTML/JS/CSS frontend served by the same app, deployed as one process.
 Dependencies live in `pyproject.toml` and are installed with `uv sync`.
 
 Each task below becomes one GitHub issue, filed with `_docs/task-template.md`
-and worked one at a time (`_docs/process.md`). Scope of the tool is in
+and worked one at a time (`_docs/process.md`). Once a task is filed, the
+GitHub issue is the source of truth — grooming updates the issue, not this
+file. Scope of the tool is in
 `_docs/plan.md`, test rules in `_docs/testing-guidelines.md`, UI rules in
 `_docs/design-system.md`.
 

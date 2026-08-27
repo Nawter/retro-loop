@@ -46,7 +46,9 @@ def test_new_session_snapshot_is_empty_with_exactly_the_six_keys(client):
 
 def test_snapshot_is_read_from_sqlite_at_connect_time(client, db):
     session = create(client)
-    advance(client, session)  # reveal, before anyone connects
+    with client.websocket_connect(f"/ws/{session['code']}") as ws:
+        assert ws.receive_json()["cards"] == []  # nothing there yet
+    advance(client, session)  # reveal
     sid = db.execute(
         "SELECT id FROM sessions WHERE code = ?", (session["code"],)
     ).fetchone()["id"]
@@ -79,21 +81,26 @@ def test_snapshot_is_read_from_sqlite_at_connect_time(client, db):
     assert [cluster["name"] for cluster in snap["clusters"]] == ["process"]
     assert [decision["text"] for decision in snap["decisions"]] == ["pair more"]
 
+    with client.websocket_connect(f"/ws/{create(client)['code']}") as ws:
+        other = ws.receive_json()  # another session sees none of those rows
+    assert (other["cards"], other["clusters"], other["votes"], other["decisions"]) == ([], [], {}, [])
 
-def test_connecting_works_in_done_phase(client):
+
+def test_connecting_works_in_every_phase_done_included(client):
     session = create(client)
-    for _ in PHASES[1:]:
-        advance(client, session)
-    with client.websocket_connect(f"/ws/{session['code']}") as ws:
-        assert ws.receive_json()["phase"] == "done"
+    for phase in PHASES:
+        with client.websocket_connect(f"/ws/{session['code']}") as ws:
+            assert ws.receive_json()["phase"] == phase
+        advance(client, session)  # the last one is a 409 and changes nothing
 
 
-def test_unknown_code_is_closed_with_1008_and_never_joins_a_room(client):
-    with client.websocket_connect("/ws/XXXXXX") as ws:
+@pytest.mark.parametrize("code", ["XXXXXX", "xxxxxx"])
+def test_unknown_code_is_closed_with_1008_and_never_joins_a_room(client, code):
+    with client.websocket_connect(f"/ws/{code}") as ws:
         with pytest.raises(WebSocketDisconnect) as closed:
             ws.receive_json()  # no snapshot: the first thing on the wire is the close
     assert closed.value.code == 1008
-    assert "XXXXXX" not in hub.rooms
+    assert hub.rooms == {}
 
 
 def test_code_is_case_insensitive_so_one_room_is_shared(client):
@@ -157,12 +164,24 @@ def test_unhandled_client_message_gets_an_error_reply_to_the_sender_only(client)
     ):
         sender.receive_json(), other.receive_json()
         for raw in ('plain text', '{"type": ', '[]', '{}', '{"type": 7}', '{"type": "nope"}',
-                    '{"type": "snapshot"}', '{"type": "phase", "phase": "done"}'):
+                    '{"type": "snapshot"}', '{"type": "phase", "phase": "done"}',
+                    '{"type": "error", "detail": "x"}'):
             sender.send_text(raw)
             assert sender.receive_json()["type"] == "error", raw
         assert_nothing_pending(other)
         advance(client, session)  # the sender's socket is still open and in the room
         assert sender.receive_json() == {"type": "phase", "phase": "reveal"}
+
+
+def test_binary_frame_gets_an_error_reply_and_the_socket_stays_open(client):
+    session = create(client)
+    with client.websocket_connect(f"/ws/{session['code']}") as ws:
+        ws.receive_json()
+        ws.send_bytes(b'{"type": "nope"}')
+        assert ws.receive_json()["type"] == "error"
+        assert_nothing_pending(ws)  # still answers text
+        advance(client, session)  # and is still in the room
+        assert ws.receive_json() == {"type": "phase", "phase": "reveal"}
 
 
 def test_disconnected_socket_is_removed_and_the_rest_still_receive(client):

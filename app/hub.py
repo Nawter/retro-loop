@@ -57,8 +57,10 @@ async def broadcast(code: str, message: dict) -> None:
             _leave(code, ws)
 
 
-def _error(raw: str) -> dict:
+def _error(raw: str | None) -> dict:
     """The reply to a client message this server does not handle."""
+    if raw is None:  # a binary frame
+        return {"type": "error", "detail": "not a text frame"}
     try:
         message = json.loads(raw)
     except ValueError:
@@ -87,7 +89,10 @@ async def room(ws: WebSocket, code: str) -> None:
     try:
         await ws.send_json(snap)
         while True:
-            await ws.send_json(_error(await ws.receive_text()))
+            msg = await ws.receive()  # not receive_text(): that KeyErrors on a binary frame
+            if msg["type"] == "websocket.disconnect":
+                break
+            await ws.send_json(_error(msg.get("text")))
     except WebSocketDisconnect:
         pass
     finally:

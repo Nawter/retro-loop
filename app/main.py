@@ -2,7 +2,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from app import db
+from app import db, sessions
 
 
 @asynccontextmanager
@@ -12,6 +12,7 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="Weekly Retro", lifespan=lifespan)
+app.include_router(sessions.router)
 
 
 @app.get("/health")

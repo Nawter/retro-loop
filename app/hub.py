@@ -6,26 +6,20 @@ from collections.abc import Callable
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from app import cards, db
+from app import cards, clusters, db, decisions
 
 # Keyed by upper-cased code. Nothing here is persisted: a restart forgets every
 # room and clients recover through a fresh snapshot.
 rooms: dict[str, set[WebSocket]] = {}
+
+# Message type -> the module that handles it; each module gates its own phases and observers.
+MODULES = {kind: module for module in (cards, clusters, decisions) for kind in module.HANDLERS}
 
 router = APIRouter()
 
 
 def snapshot(conn: sqlite3.Connection, session: sqlite3.Row, ws: WebSocket) -> dict:
     """The whole world for one session, read from SQLite right now, as this socket may see it."""
-
-    def rows(table: str) -> list[dict]:
-        return [
-            dict(row)
-            for row in conn.execute(
-                f"SELECT * FROM {table} WHERE session_id = ?", (session["id"],)
-            )
-        ]
-
     votes = conn.execute(
         "SELECT card_id, count(*) AS n FROM votes WHERE session_id = ? GROUP BY card_id",
         (session["id"],),
@@ -34,9 +28,9 @@ def snapshot(conn: sqlite3.Connection, session: sqlite3.Row, ws: WebSocket) -> d
         "type": "snapshot",
         "phase": session["phase"],
         "cards": cards.visible(conn, session, ws),
-        "clusters": rows("clusters"),
+        "clusters": clusters.rows(conn, session["id"]),
         "votes": {row["card_id"]: row["n"] for row in votes},  # JSON turns the keys into strings
-        "decisions": rows("decisions"),
+        "decisions": decisions.rows(conn, session["id"]),
     }
 
 
@@ -77,23 +71,30 @@ def _parse(raw: str | None) -> dict:
         return {"type": "error", "detail": "not JSON"}
     if not isinstance(message, dict) or not isinstance(message.get("type"), str):
         return {"type": "error", "detail": "expected a JSON object with a string type"}
-    if message["type"] not in cards.HANDLERS:
+    if message["type"] not in MODULES:
         return {"type": "error", "detail": f"unknown type: {message['type']}"}
     return message
 
 
-async def _card(ws: WebSocket, code: str, session_id: int, message: dict) -> None:
-    """One card.* message: the error goes to the sender, the event to the author's sockets."""
+async def _apply(ws: WebSocket, code: str, session_id: int, message: dict) -> None:
+    """One handled message: the error goes to the sender, the event to whoever may see it."""
+    module = MODULES[message["type"]]
     conn = db.connect()
     try:
-        reply = cards.handle(conn, session_id, ws, message)
+        reply = module.handle(conn, session_id, ws, message)
     finally:
         conn.close()
-    if reply["type"] == "error":
+    # ponytail: no per-room lock. Two fan-outs can interleave only if a send blocks on
+    # backpressure; a per-room asyncio.Lock around handle+fanout if that ever reorders events.
+    if callable(reply):  # a card move: `mine` differs per recipient, as in the reveal fan-out
+        await fanout(code, reply)
+    elif reply["type"] == "error":
         await ws.send_json(reply)
-        return
-    author = ws.state.participant_id  # every tab of the author, nobody else, until reveal
-    await fanout(code, lambda peer: reply if peer.state.participant_id == author else None)
+    elif module is cards:  # every tab of the author, nobody else, until reveal
+        author = ws.state.participant_id
+        await fanout(code, lambda peer: reply if peer.state.participant_id == author else None)
+    else:  # clusters and decisions: the same bytes for the whole room, observers included
+        await broadcast(code, reply)
 
 
 @router.websocket("/ws/{code}")
@@ -129,8 +130,8 @@ async def room(ws: WebSocket, code: str) -> None:
             if msg["type"] == "websocket.disconnect":
                 break
             message = _parse(msg.get("text"))
-            if message["type"] in cards.HANDLERS:
-                await _card(ws, code, session["id"], message)
+            if message["type"] in MODULES:
+                await _apply(ws, code, session["id"], message)
             else:
                 await ws.send_json(message)  # the error reply _parse built
     except WebSocketDisconnect:

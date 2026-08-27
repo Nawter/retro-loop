@@ -1,6 +1,7 @@
 """Cards: validate, persist, serialise, and filter per recipient."""
 
 import sqlite3
+from collections.abc import Callable
 
 from fastapi import WebSocket
 
@@ -15,7 +16,39 @@ SELECT = (
 
 
 class Rejected(Exception):
-    """Why a card.* message was refused; the detail goes back to the sender."""
+    """Why a message was refused; the detail goes back to the sender."""
+
+
+def stripped(message: dict, key: str, limit: int) -> str:
+    """`message[key]` as a non-empty string of at most `limit` characters, stripped, or Rejected."""
+    value = message.get(key)
+    if not isinstance(value, str):
+        raise Rejected(f"{key} must be a string")
+    value = value.strip()
+    if not value:
+        raise Rejected(f"{key} is empty")
+    if len(value) > limit:
+        raise Rejected(f"{key} is over {limit} characters")
+    return value
+
+
+def ident(value, what: str = "id") -> int:
+    """`value` as a SQLite rowid, or Rejected."""
+    # bool is an int in Python; a SQLite rowid is a positive signed 64-bit int, so anything
+    # outside that range is refused here rather than crashing in the bind below
+    if isinstance(value, bool) or not isinstance(value, int) or not 0 < value < 2**63:
+        raise Rejected(f"{what} must be a positive integer")
+    return value
+
+
+def ref(conn: sqlite3.Connection, table: str, session_id: int, value, what: str = "id") -> int:
+    """`value` as the id of a row of `table` in this session, or Rejected."""
+    row_id = ident(value, what)
+    if conn.execute(
+        f"SELECT 1 FROM {table} WHERE id = ? AND session_id = ?", (row_id, session_id)
+    ).fetchone() is None:
+        raise Rejected(f"no such {table[:-1]} in this session")
+    return row_id
 
 
 def serialise(row: sqlite3.Row, ws: WebSocket) -> dict:
@@ -50,29 +83,13 @@ def visible(conn: sqlite3.Connection, session: sqlite3.Row, ws: WebSocket) -> li
     return cards
 
 
-def _text(message: dict) -> str:
-    text = message.get("text")
-    if not isinstance(text, str):
-        raise Rejected("text must be a string")
-    text = text.strip()
-    if not text:
-        raise Rejected("text is empty")
-    if len(text) > MAX_TEXT:
-        raise Rejected(f"text is over {MAX_TEXT} characters")
-    return text
-
-
-def _row(conn: sqlite3.Connection, card_id: int) -> sqlite3.Row:
+def read(conn: sqlite3.Connection, card_id: int) -> sqlite3.Row:
     return conn.execute(SELECT + "WHERE cards.id = ?", (card_id,)).fetchone()
 
 
 def _own(conn: sqlite3.Connection, session_id: int, ws: WebSocket, message: dict) -> sqlite3.Row:
     """The card `id` names, if this participant wrote it in this session."""
-    card_id = message.get("id")
-    # bool is an int in Python; a SQLite rowid is a positive signed 64-bit int, so anything
-    # outside that range is refused here rather than crashing in the bind below
-    if isinstance(card_id, bool) or not isinstance(card_id, int) or not 0 < card_id < 2**63:
-        raise Rejected("id must be a positive integer")
+    card_id = ident(message.get("id"))
     row = conn.execute(
         SELECT + "WHERE cards.id = ? AND cards.session_id = ? AND cards.participant_id = ?",
         (card_id, session_id, ws.state.participant_id),
@@ -86,7 +103,7 @@ def _create(conn: sqlite3.Connection, session_id: int, ws: WebSocket, message: d
     column = message.get("column")
     if column not in COLUMNS:
         raise Rejected("column must be start, stop or continue")
-    text = _text(message)
+    text = stripped(message, "text", MAX_TEXT)
     anonymous = message.get("anonymous")
     if not isinstance(anonymous, bool):
         raise Rejected("anonymous must be true or false")
@@ -96,15 +113,16 @@ def _create(conn: sqlite3.Connection, session_id: int, ws: WebSocket, message: d
             "VALUES (?, ?, ?, ?, ?)",
             (session_id, ws.state.participant_id, column, text, anonymous),
         ).lastrowid
-    return event(_row(conn, card_id), ws)
+    return event(read(conn, card_id), ws)
 
 
 def _edit(conn: sqlite3.Connection, session_id: int, ws: WebSocket, message: dict) -> dict:
     row = _own(conn, session_id, ws, message)
-    text = _text(message)  # column and anonymous are fixed at creation: anything else is ignored
+    # column and anonymous are fixed at creation: anything else in the message is ignored
+    text = stripped(message, "text", MAX_TEXT)
     with conn:
         conn.execute("UPDATE cards SET text = ? WHERE id = ?", (text, row["id"]))
-    return event(_row(conn, row["id"]), ws)
+    return event(read(conn, row["id"]), ws)
 
 
 def _delete(conn: sqlite3.Connection, session_id: int, ws: WebSocket, message: dict) -> dict:
@@ -117,16 +135,20 @@ def _delete(conn: sqlite3.Connection, session_id: int, ws: WebSocket, message: d
 HANDLERS = {"card.create": _create, "card.edit": _edit, "card.delete": _delete}
 
 
-def handle(conn: sqlite3.Connection, session_id: int, ws: WebSocket, message: dict) -> dict:
-    """Apply one card.* message: the event for the author's sockets, or the error for the sender."""
+def handle(
+    conn: sqlite3.Connection, session_id: int, ws: WebSocket, message: dict,
+    handlers: dict = HANDLERS, phases: tuple[str, ...] = ("write",),
+) -> dict | Callable[[WebSocket], dict]:
+    """Apply one message through `handlers`, open in `phases` to participants only:
+    the event to send, or the error for the sender. Clusters and decisions reuse this gate."""
     try:
         if ws.state.participant_id is None:
-            raise Rejected("observers cannot write cards")
+            raise Rejected("observers only watch")
         phase = conn.execute(
             "SELECT phase FROM sessions WHERE id = ?", (session_id,)
         ).fetchone()["phase"]
-        if phase != "write":
-            raise Rejected(f"cards are frozen in {phase}")
-        return HANDLERS[message["type"]](conn, session_id, ws, message)
+        if phase not in phases:
+            raise Rejected(f"{message['type']} is closed in {phase}")
+        return handlers[message["type"]](conn, session_id, ws, message)
     except Rejected as why:
         return {"type": "error", "detail": str(why)}

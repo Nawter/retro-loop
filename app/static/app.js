@@ -11,8 +11,11 @@ let state = null; // the last snapshot, replaced wholesale, with deltas applied 
 let status = "connecting";
 let socket = null; // set while in the room view, null on the home view
 let advancing = false; // an advance request is in flight
-let sending = false; // a card.create/edit/delete is in flight, until the next card, card.deleted or error
+let sending = ""; // the type of the card.*/cluster.* in flight, "" when none: cleared by the next event of its kind, or an error
 let editing = null; // { id, text }: the card whose edit form is open, with the text as typed
+let renaming = null; // { id, name }: the cluster whose rename form is open, with the name as typed
+let clusterDraft = ""; // the unsent New cluster name
+let moving = null; // id of the card whose move we last sent, until its card echo or an error
 let focusId = null; // element id to focus after the next render, set by a completed action of our own
 const drafts = Object.fromEntries(Object.keys(COLUMNS).map((c) => [c, blank()])); // unsent composer per column
 let created = false; // this page created `code`, so show the shareable link
@@ -34,6 +37,10 @@ function el(tag, text) {
   const node = document.createElement(tag);
   if (text !== undefined) node.textContent = text;
   return node;
+}
+
+function byId(list) {
+  return [...list].sort((a, b) => a.id - b.id);
 }
 
 // A <label for> and the control it labels, as siblings.
@@ -105,12 +112,20 @@ async function advance() {
   render();
 }
 
-// One card.* message; nothing is drawn until its echo, only Add/Save/Delete go disabled.
-function sendCard(message) {
+// One card.* or cluster.* message; nothing is drawn until its echo, only its buttons go disabled.
+function send(message) {
   if (sending) return; // a click on a button the re-render already replaced
-  sending = true;
+  sending = message.type;
   socket.send(JSON.stringify(message));
   render();
+}
+
+// One card.move. Never gated: a second drop before the first echo sends too, and the server's
+// last write wins (#5). Nothing is drawn until the echo.
+function move(id, cluster_id) {
+  if (status !== "connected") return;
+  moving = id;
+  socket.send(JSON.stringify({ type: "card.move", id, cluster_id }));
 }
 
 function connect() {
@@ -126,8 +141,8 @@ function connect() {
     } catch {
       return; // the server never sends a non-JSON frame
     }
-    // Later tasks add their cases here: cluster (#9), vote (#10), decision,
-    // decision.deleted (#11). Until then they are ignored.
+    // Later tasks add their cases here: vote (#10), decision, decision.deleted (#11).
+    // Until then they are ignored.
     switch (message?.type) {
       case "snapshot":
         state = message;
@@ -148,7 +163,11 @@ function connect() {
           editing = null;
           focusId = `edit-${message.card.id}`;
         }
-        sending = false;
+        if (moving === message.card.id) { // the echo of our move: the card's select, in its new place
+          moving = null;
+          focusId = `move-${message.card.id}`;
+        }
+        if (sending.startsWith("card.")) sending = "";
         break;
       }
       case "card.deleted": {
@@ -156,12 +175,28 @@ function connect() {
         state.cards = state.cards.filter((c) => c.id !== message.id);
         if (card) focusId = `${card.column}-text`;
         if (editing?.id === message.id) editing = null;
-        sending = false;
+        if (sending.startsWith("card.")) sending = "";
+        break;
+      }
+      case "cluster": {
+        const i = state.clusters.findIndex((c) => c.id === message.cluster.id);
+        if (i < 0) state.clusters.push(message.cluster);
+        else state.clusters[i] = message.cluster;
+        if (i < 0 && sending === "cluster.create") { // our create echo: the next cluster is one keystroke away
+          clusterDraft = "";
+          focusId = "cluster-name";
+        } else if (sending === "cluster.rename" && renaming?.id === message.cluster.id) { // our rename echo
+          renaming = null;
+          focusId = `rename-${message.cluster.id}`;
+        }
+        if (sending.startsWith("cluster.")) sending = "";
         break;
       }
       case "error":
         say(message.detail);
-        sending = false;
+        if (moving) focusId = `move-${moving}`; // a rejected move: that select again, showing what state holds
+        moving = null;
+        sending = "";
         break;
       default:
         return;
@@ -214,14 +249,33 @@ function renderComposer(column) {
   form.onsubmit = (event) => {
     event.preventDefault();
     Object.assign(draft, { text: text.value, anonymous: anon.checked }); // a value set by script fires no input event
-    sendCard({ type: "card.create", column, text: text.value, anonymous: anon.checked });
+    send({ type: "card.create", column, text: text.value, anonymous: anon.checked });
   };
   form.append(textLabel, text, anonLabel, add);
   return form;
 }
 
+// A drop target in cluster: a column (null) or a box (its id). The card id comes from dataTransfer and
+// the target from the section itself, so a drop on a child counts and a re-render mid-drag loses nothing.
+function droppable(section, cluster_id) {
+  section.ondragover = (event) => {
+    event.preventDefault(); // what makes this a target; everything else refuses the drop
+    section.classList.add("over");
+  };
+  section.ondragleave = (event) => { // also fires when the pointer crosses a child, hence the check
+    if (!section.contains(event.relatedTarget)) section.classList.remove("over");
+  };
+  section.ondrop = (event) => {
+    event.preventDefault();
+    section.classList.remove("over");
+    const id = Number(event.dataTransfer.getData("text/plain"));
+    if (id) move(id, cluster_id);
+  };
+}
+
 function renderCard(card, write) {
   const li = el("li");
+  li.className = card.column; // the accent follows the card into a box
   if (write && editing?.id === card.id) {
     const [label, text] = field("textarea", "edit-text", "Edit card", { value: editing.text, required: true, maxLength: 500 });
     text.oninput = () => (editing.text = text.value);
@@ -238,13 +292,14 @@ function renderCard(card, write) {
     form.onsubmit = (event) => {
       event.preventDefault();
       editing.text = text.value;
-      sendCard({ type: "card.edit", id: card.id, text: text.value });
+      send({ type: "card.edit", id: card.id, text: text.value });
     };
     form.append(label, text, save, cancel);
     li.append(form);
     return li;
   }
   li.append(el("p", card.text), el("p", card.author ?? "Anonymous"));
+  if (card.cluster_id != null) li.append(el("p", COLUMNS[card.column])); // in a box the column heading is not above it
   if (write && card.mine) {
     const edit = el("button", "Edit");
     edit.id = `edit-${card.id}`;
@@ -255,8 +310,19 @@ function renderCard(card, write) {
     };
     const del = el("button", "Delete");
     del.disabled = sending || status !== "connected";
-    del.onclick = () => sendCard({ type: "card.delete", id: card.id });
+    del.onclick = () => send({ type: "card.delete", id: card.id });
     li.append(edit, del);
+  }
+  if (state.phase === "cluster") { // anyone moves any card: by drag, or by the select for keyboards and touch
+    if (status === "connected") li.draggable = true;
+    li.ondragstart = (event) => event.dataTransfer.setData("text/plain", String(card.id));
+    li.ondragend = () => document.querySelector(".over")?.classList.remove("over"); // Escape, or a drop off-target
+    const [label, select] = field("select", `move-${card.id}`, "Move to");
+    select.append(new Option("No cluster", ""), ...byId(state.clusters).map((c) => new Option(c.name, c.id)));
+    select.value = card.cluster_id ?? "";
+    select.disabled = status !== "connected";
+    select.onchange = () => move(card.id, select.value === "" ? null : Number(select.value)); // the DOM holds strings, #5 wants integers
+    li.append(label, select);
   }
   return li;
 }
@@ -270,8 +336,84 @@ function renderColumn(column, write) {
   section.append(h2);
   if (write) section.append(renderComposer(column));
   const list = el("ul");
-  list.append(...state.cards.filter((c) => c.column === column).sort((a, b) => a.id - b.id).map((c) => renderCard(c, write)));
+  list.append(...byId(state.cards.filter((c) => c.column === column && c.cluster_id == null)).map((c) => renderCard(c, write)));
   section.append(list);
+  if (state.phase === "cluster") droppable(section, null);
+  return section;
+}
+
+function renderBox(cluster, edit) {
+  const section = el("section");
+  section.id = `cluster-${cluster.id}`;
+  if (edit && renaming?.id === cluster.id) {
+    section.setAttribute("aria-label", cluster.name);
+    const [label, text] = input("rename-text", "Cluster name", renaming.name, 100);
+    text.oninput = () => (renaming.name = text.value);
+    const save = el("button", "Save");
+    save.disabled = sending || status !== "connected";
+    const cancel = el("button", "Cancel");
+    cancel.type = "button";
+    cancel.onclick = () => {
+      renaming = null;
+      focusId = `rename-${cluster.id}`;
+      render();
+    };
+    const form = el("form");
+    form.onsubmit = (event) => {
+      event.preventDefault();
+      renaming.name = text.value;
+      send({ type: "cluster.rename", id: cluster.id, name: text.value });
+    };
+    form.append(label, text, save, cancel);
+    section.append(form);
+  } else {
+    const h3 = el("h3", cluster.name);
+    h3.id = `cluster-${cluster.id}-heading`;
+    section.setAttribute("aria-labelledby", h3.id);
+    section.append(h3);
+    if (edit) {
+      const rename = el("button", "Rename");
+      rename.id = `rename-${cluster.id}`;
+      rename.onclick = () => {
+        renaming = { id: cluster.id, name: cluster.name }; // one form at a time: this replaces any other
+        focusId = "rename-text";
+        render();
+      };
+      section.append(rename);
+    }
+  }
+  const list = el("ul");
+  list.append(...byId(state.cards.filter((c) => c.cluster_id === cluster.id)).map((c) => renderCard(c, false)));
+  section.append(list);
+  if (edit) droppable(section, cluster.id);
+  return section;
+}
+
+// The grouped board's fourth section: the New cluster form in cluster, then one box per cluster.
+function renderClusters(edit) {
+  const section = el("section");
+  section.className = "clusters";
+  const h2 = el("h2", "Clusters");
+  h2.id = "clusters-heading";
+  section.setAttribute("aria-labelledby", h2.id);
+  section.append(h2);
+  if (edit) {
+    const [label, text] = input("cluster-name", "New cluster", clusterDraft, 100);
+    text.oninput = () => (clusterDraft = text.value);
+    const add = el("button", "Add cluster");
+    add.disabled = sending || status !== "connected";
+    const form = el("form");
+    form.onsubmit = (event) => {
+      event.preventDefault();
+      clusterDraft = text.value; // a value set by script fires no input event
+      send({ type: "cluster.create", name: text.value });
+    };
+    form.append(label, text, add);
+    section.append(form);
+  }
+  const boxes = el("div");
+  boxes.append(...byId(state.clusters).map((c) => renderBox(c, edit)));
+  section.append(boxes);
   return section;
 }
 
@@ -285,22 +427,29 @@ function renderRoom() {
     button.onclick = advance;
     header.append(button);
   }
-  // The board: composers and Edit/Delete in write, read-only from reveal on. #9 (cluster),
-  // #10 (vote, discuss) and #11 (done) each replace it for their phase, drawing from `state`.
+  // The board: composers and Edit/Delete in write, read-only in reveal. From cluster on it is grouped:
+  // unclustered cards in their columns, boxes below, editable in cluster only (#5's wider server window
+  // is a margin). #10 (vote, discuss) and #11 (discuss, done) build on the grouped board, from `state`.
   const main = el("main");
   if (state) {
     const write = state.phase === "write";
     main.append(el("h1", state.phase), ...Object.keys(COLUMNS).map((column) => renderColumn(column, write)));
+    if (PHASES.indexOf(state.phase) >= PHASES.indexOf("cluster")) main.append(renderClusters(state.phase === "cluster"));
   }
   app.append(header, main);
 }
 
-// Redraws everything from `state` and the flags above; nothing reads back from the DOM.
+// Redraws everything from `state` and the flags above; nothing reads back from the DOM. Focus, and the
+// caret of a text input, survive someone else's event by element id; an own completed action sets focusId.
 function render() {
+  const active = document.activeElement;
+  const keep = !focusId && active?.id ? { id: active.id, start: active.selectionStart, end: active.selectionEnd } : null;
   app.replaceChildren();
   if (socket) renderRoom();
   else renderHome();
-  if (focusId) document.getElementById(focusId)?.focus();
+  const node = document.getElementById(focusId || keep?.id || "");
+  node?.focus();
+  if (node && keep?.start != null) node.setSelectionRange(keep.start, keep.end);
   focusId = null;
 }
 

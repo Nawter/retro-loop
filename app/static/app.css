@@ -1,0 +1,96 @@
+:root {
+  --bg: #f5f5f3;
+  --surface: #ffffff;
+  --text: #1f1f1f;
+  --muted: #5f6368;
+  --border: #d0d0cc;
+  --start: #2e7d32;
+  --stop: #c62828;
+  --continue: #1565c0;
+  --accent: #4f46e5;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 16px;
+  --space-4: 24px;
+  --radius: 6px;
+  --font: system-ui, sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #131316;
+    --surface: #1f1f24;
+    --text: #ebebeb;
+    --muted: #a1a1aa;
+    --border: #3a3a42;
+    --start: #66bb6a;
+    --stop: #ef5350;
+    --continue: #64b5f6;
+    --accent: #a5b4fc;
+  }
+}
+
+body {
+  margin: 0;
+  padding: var(--space-3);
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+}
+
+header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-4);
+  padding: var(--space-2) var(--space-3);
+  margin-bottom: var(--space-4);
+  background: var(--surface);
+  border: thin solid var(--border);
+  border-radius: var(--radius);
+}
+
+label {
+  display: block;
+  margin-top: var(--space-3);
+  color: var(--muted);
+}
+
+input,
+button {
+  font: inherit;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius);
+}
+
+input {
+  border: thin solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+}
+
+button {
+  border: thin solid var(--accent);
+  background: var(--accent);
+  color: var(--bg);
+  cursor: pointer;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+form button {
+  margin-top: var(--space-3);
+}
+
+a {
+  color: var(--accent);
+  overflow-wrap: anywhere;
+}
+
+:focus-visible {
+  outline: medium solid var(--accent);
+  outline-offset: var(--space-1);
+}

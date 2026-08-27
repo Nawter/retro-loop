@@ -9,9 +9,11 @@ One or two sentences on what should be true when this is done.
 
 ## Out of scope
 
-- Something that does not belong in this task, moved to #12
+- Something that does not belong in this task, moved to #TASK-NUMBER
 
 ## Constraints
 
 - Files this should stay inside
-- Libraries it may not add, patterns it must follow
+- Libraries to use
+- Guidelines to follow
+ 

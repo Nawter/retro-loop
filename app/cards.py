@@ -69,8 +69,10 @@ def _row(conn: sqlite3.Connection, card_id: int) -> sqlite3.Row:
 def _own(conn: sqlite3.Connection, session_id: int, ws: WebSocket, message: dict) -> sqlite3.Row:
     """The card `id` names, if this participant wrote it in this session."""
     card_id = message.get("id")
-    if isinstance(card_id, bool) or not isinstance(card_id, int):  # bool is an int in Python
-        raise Rejected("id must be an integer")
+    # bool is an int in Python; a SQLite rowid is a positive signed 64-bit int, so anything
+    # outside that range is refused here rather than crashing in the bind below
+    if isinstance(card_id, bool) or not isinstance(card_id, int) or not 0 < card_id < 2**63:
+        raise Rejected("id must be a positive integer")
     row = conn.execute(
         SELECT + "WHERE cards.id = ? AND cards.session_id = ? AND cards.participant_id = ?",
         (card_id, session_id, ws.state.participant_id),

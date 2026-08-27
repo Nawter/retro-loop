@@ -231,12 +231,18 @@ def join(client, code, name="Sam"):
 
 def test_bad_token_is_closed_with_1008_and_never_joins_a_room(client):
     session = create(client)
+    code = session["code"]
     theirs = join(client, create(client)["code"])  # a participant, but of another session
-    for token in ("random", theirs, session["facilitator_token"]):
-        with client.websocket_connect(f"/ws/{session['code']}?token={token}") as ws:
-            with pytest.raises(WebSocketDisconnect) as closed:
-                ws.receive_json()  # no snapshot: the first thing on the wire is the close
-        assert closed.value.code == 1008, token
+    with client.websocket_connect(f"/ws/{code}") as good:
+        good.receive_json()
+        for token in ("random", theirs, session["facilitator_token"]):
+            with client.websocket_connect(f"/ws/{code}?token={token}") as ws:
+                with pytest.raises(WebSocketDisconnect) as closed:
+                    ws.receive_json()  # no snapshot: the first thing on the wire is the close
+            assert closed.value.code == 1008, token
+            assert len(hub.rooms[code]) == 1  # the socket already in the room is undisturbed
+        advance(client, session)
+        assert good.receive_json() == {"type": "phase", "phase": "reveal"}
     assert hub.rooms == {}
 
 

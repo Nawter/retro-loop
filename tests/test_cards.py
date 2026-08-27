@@ -92,6 +92,7 @@ def test_write_phase_snapshot_holds_only_your_own_cards(client):
     with connect(client, code, sam) as ws:
         cards = ws.receive_json()["cards"]
     assert [(c["text"], c["mine"]) for c in cards] == [("sam's secret", True)]
+    assert set(cards[0]) == CARD_KEYS
     with connect(client, code, ann) as ws:
         cards = ws.receive_json()["cards"]
     assert [(c["text"], c["mine"]) for c in cards] == [("ann's secret", True)]
@@ -147,6 +148,8 @@ def test_reveal_fans_out_every_card_to_every_socket_after_the_phase_event(client
             snap = ws.receive_json()
         assert snap["cards"] == [c | {"mine": m} for c, m in zip(expected, anns)]
         assert all(set(card) == CARD_KEYS for card in snap["cards"])
+        with connect(client, r.code) as ws:  # an observer sees the same, "Sam" named on his cards
+            assert ws.receive_json()["cards"] == [c | {"mine": False} for c in expected]
 
         assert advance(client, r.session).json() == {"phase": "cluster"}  # only the phase event
         for ws in (r.sam1, r.sam2, r.ann1, r.observer):
@@ -305,3 +308,36 @@ def test_card_and_card_deleted_are_server_only_types(client, db):
             ws.send_json(message)
             assert ws.receive_json()["detail"] == f"unknown type: {message['type']}"
         assert stored(db) == []
+
+
+def test_out_of_range_id_is_rejected_not_crashed(client, db):
+    session = create(client)
+    with connect(client, session["code"], join(client, session["code"], "Sam")) as ws:
+        ws.receive_json()
+        card = create_card(ws)["card"]
+        for bad in (2**70, -(2**70), 2**63, 0):  # beyond or outside SQLite's signed 64-bit rowid
+            for op in ({"type": "card.edit", "id": bad, "text": "x"}, {"type": "card.delete", "id": bad}):
+                ws.send_json(op)
+                assert ws.receive_json()["type"] == "error", op
+        assert_nothing_pending(ws)  # the socket is still open and answering
+    assert stored(db) == [(card["id"], "start", "pairing", 0)]
+
+
+def test_a_rejected_operation_reaches_no_other_socket(client, db):
+    with room(client) as r:
+        card = create_card(r.sam1)["card"]
+        r.sam2.receive_json()
+        before = stored(db)
+        for op in (
+            {"type": "card.create", "column": "Start", "text": "x", "anonymous": False},
+            {"type": "card.create", "column": "start", "text": "   ", "anonymous": False},
+            {"type": "card.create", "column": "start", "text": "x", "anonymous": "true"},
+            {"type": "card.edit", "id": "1", "text": "x"},
+            {"type": "card.edit", "id": card["id"], "text": "x" * 501},
+            {"type": "card.delete", "id": 2**70},
+        ):
+            r.sam1.send_json(op)
+            assert r.sam1.receive_json()["type"] == "error", op
+        for ws in (r.sam2, r.ann1, r.observer, r.stranger):
+            assert_nothing_pending(ws)
+        assert stored(db) == before

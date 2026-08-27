@@ -6,7 +6,7 @@ import sqlite3
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from app import db
+from app import db, hub
 
 # Codes get read aloud and typed: no 0/O, no 1/I/l.
 CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
@@ -81,7 +81,8 @@ def join_session(code: str, body: JoinBody) -> dict[str, str]:
 
 
 @router.post("/sessions/{code}/advance")
-def advance_phase(code: str, body: AdvanceBody) -> dict[str, str]:
+async def advance_phase(code: str, body: AdvanceBody) -> dict[str, str]:
+    """Async so it can await the broadcast; the SQLite work here is microseconds."""
     conn = db.connect()
     try:
         session = _get_session(conn, code)
@@ -94,6 +95,7 @@ def advance_phase(code: str, body: AdvanceBody) -> dict[str, str]:
             conn.execute(
                 "UPDATE sessions SET phase = ? WHERE id = ?", (phase, session["id"])
             )
-        return {"phase": phase}
     finally:
         conn.close()
+    await hub.broadcast(code, {"type": "phase", "phase": phase})  # after the commit
+    return {"phase": phase}

@@ -39,7 +39,7 @@ def test_new_session_snapshot_is_empty_with_exactly_the_six_keys(client):
             "phase": "write",
             "cards": [],
             "clusters": [],
-            "votes": {},
+            "votes": {"counts": {}, "mine": {}, "left": 0},
             "decisions": [],
         }
 
@@ -77,13 +77,15 @@ def test_snapshot_is_read_from_sqlite_at_connect_time(client, db):
     assert set(snap) == SNAPSHOT_KEYS
     assert snap["phase"] == "reveal"
     assert [card["text"] for card in snap["cards"]] == ["pairing"]
-    assert snap["votes"] == {str(cid): 2}
+    assert snap["votes"] == {"counts": {str(cid): 2}, "mine": {}, "left": 0}
     assert [cluster["name"] for cluster in snap["clusters"]] == ["process"]
     assert [decision["text"] for decision in snap["decisions"]] == ["pair more"]
 
     with client.websocket_connect(f"/ws/{create(client)['code']}") as ws:
         other = ws.receive_json()  # another session sees none of those rows
-    assert (other["cards"], other["clusters"], other["votes"], other["decisions"]) == ([], [], {}, [])
+    assert (other["cards"], other["clusters"], other["votes"], other["decisions"]) == (
+        [], [], {"counts": {}, "mine": {}, "left": 0}, []
+    )
 
 
 def test_connecting_works_in_every_phase_done_included(client):

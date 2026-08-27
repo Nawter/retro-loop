@@ -6,30 +6,26 @@ from collections.abc import Callable
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from app import cards, clusters, db, decisions
+from app import cards, clusters, db, decisions, votes
 
 # Keyed by upper-cased code. Nothing here is persisted: a restart forgets every
 # room and clients recover through a fresh snapshot.
 rooms: dict[str, set[WebSocket]] = {}
 
 # Message type -> the module that handles it; each module gates its own phases and observers.
-MODULES = {kind: module for module in (cards, clusters, decisions) for kind in module.HANDLERS}
+MODULES = {kind: module for module in (cards, clusters, decisions, votes) for kind in module.HANDLERS}
 
 router = APIRouter()
 
 
 def snapshot(conn: sqlite3.Connection, session: sqlite3.Row, ws: WebSocket) -> dict:
     """The whole world for one session, read from SQLite right now, as this socket may see it."""
-    votes = conn.execute(
-        "SELECT card_id, count(*) AS n FROM votes WHERE session_id = ? GROUP BY card_id",
-        (session["id"],),
-    )
     return {
         "type": "snapshot",
         "phase": session["phase"],
         "cards": cards.visible(conn, session, ws),
         "clusters": clusters.rows(conn, session["id"]),
-        "votes": {row["card_id"]: row["n"] for row in votes},  # JSON turns the keys into strings
+        "votes": votes.visible(conn, session["id"], ws),
         "decisions": decisions.rows(conn, session["id"]),
     }
 

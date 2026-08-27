@@ -223,3 +223,45 @@ def test_room_key_is_deleted_when_the_last_socket_leaves(client):
             assert code in hub.rooms
         assert code in hub.rooms
     assert code not in hub.rooms
+
+
+def join(client, code, name="Sam"):
+    return client.post(f"/sessions/{code}/join", json={"name": name}).json()["participant_token"]
+
+
+def test_bad_token_is_closed_with_1008_and_never_joins_a_room(client):
+    session = create(client)
+    theirs = join(client, create(client)["code"])  # a participant, but of another session
+    for token in ("random", theirs, session["facilitator_token"]):
+        with client.websocket_connect(f"/ws/{session['code']}?token={token}") as ws:
+            with pytest.raises(WebSocketDisconnect) as closed:
+                ws.receive_json()  # no snapshot: the first thing on the wire is the close
+        assert closed.value.code == 1008, token
+    assert hub.rooms == {}
+
+
+@pytest.mark.parametrize("query", ["", "?token="])
+def test_no_token_is_an_observer_that_reads_but_cannot_write(client, db, query):
+    session = create(client)
+    code = session["code"]
+    with client.websocket_connect(f"/ws/{code}?token={join(client, code)}") as author:
+        author.receive_json()
+        author.send_json({"type": "card.create", "column": "start", "text": "secret", "anonymous": False})
+        card_id = author.receive_json()["card"]["id"]
+
+    with client.websocket_connect(f"/ws/{code}{query}") as ws:
+        snap = ws.receive_json()
+        assert (snap["phase"], snap["cards"]) == ("write", [])
+        for op in (
+            {"type": "card.create", "column": "start", "text": "x", "anonymous": False},
+            {"type": "card.edit", "id": card_id, "text": "x"},
+            {"type": "card.delete", "id": card_id},
+        ):
+            ws.send_json(op)
+            assert ws.receive_json()["type"] == "error", op
+        assert [row["text"] for row in db.execute("SELECT text FROM cards")] == ["secret"]
+        advance(client, session)  # still in the room: gets the phase event and the reveal
+        assert ws.receive_json() == {"type": "phase", "phase": "reveal"}
+        card = ws.receive_json()["card"]
+        assert (card["text"], card["author"], card["mine"]) == ("secret", "Sam", False)
+        assert_nothing_pending(ws)

@@ -11,8 +11,10 @@ let state = null; // the last snapshot, replaced wholesale, with deltas applied 
 let status = "connecting";
 let socket = null; // set while in the room view, null on the home view
 let advancing = false; // an advance request is in flight
-let sending = ""; // the type of the card.*/cluster.*/vote.* in flight, "" when none: cleared by the next event of its kind, or an error
+let sending = ""; // the type of the card.*/cluster.*/vote.*/decision.* in flight, "" when none: cleared by the next event of its kind, or an error
 let editing = null; // { id, text }: the card whose edit form is open, with the text as typed
+let editingDecision = null; // { id, kind, text, owner }: the decision whose edit form is open, as typed
+let decisionDraft = { kind: "decision", text: "", owner: "" }; // the unsent pad composer
 let renaming = null; // { id, name }: the cluster whose rename form is open, with the name as typed
 let clusterDraft = ""; // the unsent New cluster name
 let moving = null; // id of the card whose move we last sent, until its card echo or an error
@@ -113,7 +115,7 @@ async function advance() {
   render();
 }
 
-// One card.*, cluster.* or vote.* message; nothing is drawn until its echo, only its buttons go disabled.
+// One card.*, cluster.*, vote.* or decision.* message; nothing is drawn until its echo, only its buttons go disabled.
 function send(message) {
   if (sending) return; // a click on a button the re-render already replaced
   sending = message.type;
@@ -143,8 +145,6 @@ function connect() {
     } catch {
       return; // the server never sends a non-JSON frame
     }
-    // Later tasks add their cases here: decision, decision.deleted (#11).
-    // Until then they are ignored.
     switch (message?.type) {
       case "snapshot":
         state = message;
@@ -208,10 +208,32 @@ function connect() {
         if (sending.startsWith("vote.")) sending = "";
         break;
       }
+      case "decision": { // the same bytes for the whole room (#5): upsert by id
+        const i = state.decisions.findIndex((d) => d.id === message.decision.id);
+        if (i < 0) state.decisions.push(message.decision);
+        else state.decisions[i] = message.decision;
+        if (i < 0 && sending === "decision.create") { // our create echo: the next entry is one keystroke away
+          decisionDraft = { kind: "decision", text: "", owner: "" };
+          focusId = "decision-text";
+        } else if (sending === "decision.edit" && editingDecision?.id === message.decision.id) { // our save echo
+          editingDecision = null;
+          focusId = `edit-decision-${message.decision.id}`;
+        }
+        if (sending.startsWith("decision.")) sending = "";
+        break;
+      }
+      case "decision.deleted":
+        state.decisions = state.decisions.filter((d) => d.id !== message.id);
+        if (editingDecision?.id === message.id) editingDecision = null; // gone under our form: nothing to save, nothing to say
+        if (sending === "decision.delete") focusId = "decision-text"; // our echo
+        if (sending.startsWith("decision.")) sending = "";
+        break;
       case "error":
         say(message.detail);
         if (moving) focusId = `move-${moving}`; // a rejected move: that select again, showing what state holds
         if (voting) focusId = `${sending === "vote.remove" ? "unvote" : "vote"}-${voting}`; // a rejected vote: the button pressed
+        if (sending === "decision.create") focusId = "decision-add"; // a rejected create or save: the button pressed, enabled again
+        if (sending === "decision.edit") focusId = "edit-decision-save";
         moving = null;
         voting = null;
         sending = "";
@@ -473,6 +495,137 @@ function renderRanking() {
   return section;
 }
 
+// A pad form: Kind, Text and Owner with ids `<prefix>-kind/-text/-owner`, bound to `draft` as typed, then `button`.
+// Submit copies the fields into `draft` (a value set by script fires no input event) and sends `message` with them,
+// `owner` null when the input is empty (#5); nothing is drawn until the echo.
+function decisionForm(prefix, draft, message, button) {
+  const [kindLabel, kind] = field("select", `${prefix}-kind`, "Kind");
+  kind.append(new Option("Decision", "decision"), new Option("Action", "action"));
+  kind.value = draft.kind;
+  kind.onchange = () => (draft.kind = kind.value);
+  const [textLabel, text] = field("textarea", `${prefix}-text`, "Text", { value: draft.text, required: true, maxLength: 500 });
+  text.oninput = () => (draft.text = text.value);
+  const [ownerLabel, owner] = field("input", `${prefix}-owner`, "Owner (optional)", { value: draft.owner, maxLength: 100 });
+  owner.oninput = () => (draft.owner = owner.value);
+  button.disabled = sending || status !== "connected";
+  const form = el("form");
+  form.onsubmit = (event) => {
+    event.preventDefault();
+    Object.assign(draft, { kind: kind.value, text: text.value, owner: owner.value });
+    send({ ...message, kind: kind.value, text: text.value, owner: owner.value || null });
+  };
+  form.append(kindLabel, kind, textLabel, text, ownerLabel, owner, button);
+  return form;
+}
+
+// discuss and done: the pad below the ranked list, every entry of state.decisions by id; the composer and
+// Edit/Delete in discuss only, since the server closes decision.* in done (#5). Anyone edits or deletes any entry.
+function renderDecisions() {
+  const edit = state.phase === "discuss";
+  const section = el("section");
+  section.className = "decisions";
+  const h2 = el("h2", "Decisions and actions");
+  h2.id = "decisions-heading";
+  section.setAttribute("aria-labelledby", h2.id);
+  section.append(h2);
+  if (edit) {
+    const add = el("button", "Add");
+    add.id = "decision-add";
+    section.append(decisionForm("decision", decisionDraft, { type: "decision.create" }, add));
+  }
+  const list = el("ul");
+  list.id = "decisions";
+  for (const d of byId(state.decisions)) {
+    const li = el("li");
+    li.id = `decision-${d.id}`;
+    if (edit && editingDecision?.id === d.id) {
+      const save = el("button", "Save");
+      save.id = "edit-decision-save";
+      const form = decisionForm("edit-decision", editingDecision, { type: "decision.edit", id: d.id }, save);
+      const cancel = el("button", "Cancel");
+      cancel.type = "button";
+      cancel.onclick = () => {
+        editingDecision = null;
+        focusId = `edit-decision-${d.id}`;
+        render();
+      };
+      form.append(cancel);
+      li.append(form);
+    } else {
+      li.append(el("p", d.kind === "action" ? "Action" : "Decision"), el("p", d.text)); // the tag is the signal, not a colour
+      if (d.owner != null) li.append(el("p", `Owner: ${d.owner}`));
+      if (edit) {
+        const open = el("button", "Edit");
+        open.id = `edit-decision-${d.id}`;
+        open.onclick = () => {
+          editingDecision = { id: d.id, kind: d.kind, text: d.text, owner: d.owner ?? "" }; // one form at a time: this replaces any other
+          focusId = "edit-decision-text";
+          render();
+        };
+        const del = el("button", "Delete");
+        del.id = `delete-decision-${d.id}`;
+        del.disabled = sending || status !== "connected";
+        del.onclick = () => send({ type: "decision.delete", id: d.id });
+        li.append(open, del);
+      }
+    }
+    list.append(li);
+  }
+  section.append(list);
+  return section;
+}
+
+// The whole retro as markdown from `state` and `code`: blocks joined by one blank line, an empty block omitted with
+// its heading, one trailing newline. Text goes in verbatim, a newline in it becoming one space so each item is one line.
+function markdown() {
+  const line = (text) => text.replace(/\r?\n/g, " ");
+  const cards = byId(state.cards);
+  const blocks = [`# Retro ${code}`];
+  for (const [column, heading] of Object.entries(COLUMNS)) {
+    const lines = cards.filter((c) => c.column === column).map((c) => {
+      const votes = state.votes.counts[String(c.id)] ?? 0; // string keys (#6); never (N yours)
+      const cluster = c.cluster_id == null ? "" : ` [${state.clusters.find((k) => k.id === c.cluster_id)?.name}]`;
+      return `- ${line(c.text)} (${c.author ?? "Anonymous"}, ${votes} ${votes === 1 ? "vote" : "votes"})${cluster}`;
+    });
+    if (lines.length) blocks.push([`## ${heading}`, "", ...lines].join("\n"));
+  }
+  if (state.clusters.length) {
+    const lines = byId(state.clusters).flatMap((k) => [`- ${k.name}`, ...cards.filter((c) => c.cluster_id === k.id).map((c) => `  - ${line(c.text)}`)]);
+    blocks.push(["## Clusters", "", ...lines].join("\n"));
+  }
+  for (const [kind, heading] of [["decision", "Decisions"], ["action", "Actions"]]) {
+    const lines = byId(state.decisions).filter((d) => d.kind === kind).map((d) => `- ${line(d.text)}${d.owner == null ? "" : ` (owner: ${d.owner})`}`);
+    if (lines.length) blocks.push([`## ${heading}`, "", ...lines].join("\n"));
+  }
+  return blocks.join("\n\n") + "\n";
+}
+
+// discuss and done: the markdown in a readonly textarea, rebuilt from state on every render, and a button that copies
+// it. The copy wants a user gesture, so writeText is called in the click handler; when the clipboard is missing (no
+// secure context) or refuses, the textarea is focused and selected so Ctrl+C finishes the job.
+function renderExport() {
+  const section = el("section");
+  section.className = "export";
+  const h2 = el("h2", "Export");
+  h2.id = "export-heading";
+  section.setAttribute("aria-labelledby", h2.id);
+  const copy = el("button", "Copy as Markdown");
+  copy.id = "export";
+  const [label, text] = field("textarea", "export-text", "Markdown", { value: markdown(), readOnly: true, rows: 8 });
+  copy.onclick = () => {
+    const fallback = () => {
+      say("Copy failed, select the text below");
+      const node = document.getElementById("export-text"); // the current one: a render may have replaced `text` by now
+      node.focus();
+      node.select();
+    };
+    if (!navigator.clipboard) return fallback();
+    navigator.clipboard.writeText(markdown()).then(() => say("Copied"), fallback);
+  };
+  section.append(h2, copy, label, text);
+  return section;
+}
+
 function renderRoom() {
   const header = el("header");
   header.append(el("span", `Code: ${code}`), el("span", `Phase: ${state ? state.phase : ""}`), el("span", `Status: ${status}`));
@@ -491,12 +644,12 @@ function renderRoom() {
   // The board: composers and Edit/Delete in write, read-only in reveal. From cluster on it is grouped:
   // unclustered cards in their columns, boxes below, editable in cluster only (#5's wider server window
   // is a margin). In vote the cards carry the vote controls; in discuss and done the board is one list
-  // ranked by votes (#11 adds the decision pad below it). All from `state`.
+  // ranked by votes with the decision pad and the export below it. All from `state`.
   const main = el("main");
   if (state) {
     const write = state.phase === "write";
     main.append(el("h1", state.phase));
-    if (PHASES.indexOf(state.phase) >= PHASES.indexOf("discuss")) main.append(renderRanking());
+    if (PHASES.indexOf(state.phase) >= PHASES.indexOf("discuss")) main.append(renderRanking(), renderDecisions(), renderExport());
     else {
       main.append(...Object.keys(COLUMNS).map((column) => renderColumn(column, write)));
       if (PHASES.indexOf(state.phase) >= PHASES.indexOf("cluster")) main.append(renderClusters(state.phase === "cluster"));

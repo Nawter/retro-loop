@@ -179,6 +179,20 @@ li > button {
   overflow-wrap: anywhere;
 }
 
+/* The pad's entries: the accent for both kinds (the tag is the signal), the kind tag above the text and the
+   owner below it muted like a byline. */
+.decisions li {
+  border-left-color: var(--accent);
+}
+
+.decisions li p:first-child {
+  color: var(--muted);
+}
+
+.decisions li p:nth-child(2) {
+  color: var(--text);
+}
+
 /* The drop target under a dragged card: a column or a box. */
 section.over {
   border-color: var(--accent);
@@ -217,6 +231,10 @@ section.over {
   .clusters,
   .ranking {
     grid-column: 1 / -1;
+  }
+
+  .decisions { /* the row below the ranking: the pad on two columns, the export (next in DOM order) on the third */
+    grid-column: 1 / 3;
   }
 
   main > section {

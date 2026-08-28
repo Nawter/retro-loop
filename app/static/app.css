@@ -115,7 +115,8 @@ section {
   min-width: 0; /* content wraps inside; nothing widens a column or a box */
 }
 
-ul {
+ul,
+ol { /* the ranked list shows counts, not numbers */
   list-style: none;
   margin: 0;
   padding: 0;
@@ -209,11 +210,12 @@ section.over {
     min-height: 0;
     grid-template-columns: repeat(3, minmax(0, 1fr));
     grid-template-rows: auto;
-    grid-auto-rows: minmax(0, 1fr); /* the columns' row and, from cluster on, the Clusters row share the height */
+    grid-auto-rows: minmax(0, 1fr); /* the columns' row and, from cluster on, the Clusters (or ranking) row share the height */
   }
 
   main h1,
-  .clusters {
+  .clusters,
+  .ranking {
     grid-column: 1 / -1;
   }
 

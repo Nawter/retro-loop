@@ -11,11 +11,12 @@ let state = null; // the last snapshot, replaced wholesale, with deltas applied 
 let status = "connecting";
 let socket = null; // set while in the room view, null on the home view
 let advancing = false; // an advance request is in flight
-let sending = ""; // the type of the card.*/cluster.* in flight, "" when none: cleared by the next event of its kind, or an error
+let sending = ""; // the type of the card.*/cluster.*/vote.* in flight, "" when none: cleared by the next event of its kind, or an error
 let editing = null; // { id, text }: the card whose edit form is open, with the text as typed
 let renaming = null; // { id, name }: the cluster whose rename form is open, with the name as typed
 let clusterDraft = ""; // the unsent New cluster name
 let moving = null; // id of the card whose move we last sent, until its card echo or an error
+let voting = null; // id of the card whose vote.* we last sent, until its vote echo or an error
 let focusId = null; // element id to focus after the next render, set by a completed action of our own
 const drafts = Object.fromEntries(Object.keys(COLUMNS).map((c) => [c, blank()])); // unsent composer per column
 let created = false; // this page created `code`, so show the shareable link
@@ -112,10 +113,11 @@ async function advance() {
   render();
 }
 
-// One card.* or cluster.* message; nothing is drawn until its echo, only its buttons go disabled.
+// One card.*, cluster.* or vote.* message; nothing is drawn until its echo, only its buttons go disabled.
 function send(message) {
   if (sending) return; // a click on a button the re-render already replaced
   sending = message.type;
+  if (sending.startsWith("vote.")) voting = message.id; // what the focus rule and "No votes left" read on the echo
   socket.send(JSON.stringify(message));
   render();
 }
@@ -141,7 +143,7 @@ function connect() {
     } catch {
       return; // the server never sends a non-JSON frame
     }
-    // Later tasks add their cases here: vote (#10), decision, decision.deleted (#11).
+    // Later tasks add their cases here: decision, decision.deleted (#11).
     // Until then they are ignored.
     switch (message?.type) {
       case "snapshot":
@@ -192,10 +194,26 @@ function connect() {
         if (sending.startsWith("cluster.")) sending = "";
         break;
       }
+      case "vote": { // the card's total for everyone, `mine` and `left` for this socket (#6); keys are strings
+        const id = String(message.card_id);
+        state.votes.counts[id] = message.count;
+        state.votes.mine[id] = message.mine;
+        state.votes.left = message.left;
+        if (voting === message.card_id) { // our echo: Vote again, unless it is now disabled or we removed our last
+          if (sending === "vote.cast" && message.left === 0) say("No votes left");
+          const unvote = sending === "vote.cast" ? message.left === 0 : message.mine > 0;
+          focusId = `${unvote ? "unvote" : "vote"}-${message.card_id}`;
+          voting = null;
+        }
+        if (sending.startsWith("vote.")) sending = "";
+        break;
+      }
       case "error":
         say(message.detail);
         if (moving) focusId = `move-${moving}`; // a rejected move: that select again, showing what state holds
+        if (voting) focusId = `${sending === "vote.remove" ? "unvote" : "vote"}-${voting}`; // a rejected vote: the button pressed
         moving = null;
+        voting = null;
         sending = "";
         break;
       default:
@@ -299,7 +317,30 @@ function renderCard(card, write) {
     return li;
   }
   li.append(el("p", card.text), el("p", card.author ?? "Anonymous"));
-  if (card.cluster_id != null) li.append(el("p", COLUMNS[card.column])); // in a box the column heading is not above it
+  const ranked = PHASES.indexOf(state.phase) >= PHASES.indexOf("discuss"); // one list: no column heading above, the cluster alongside
+  if (ranked || card.cluster_id != null) li.append(el("p", COLUMNS[card.column])); // in a box the column heading is not above it
+  if (ranked) li.append(el("p", state.clusters.find((c) => c.id === card.cluster_id)?.name ?? "No cluster"));
+  if (ranked || state.phase === "vote") {
+    const votes = state.votes.counts[String(card.id)] ?? 0; // the snapshot's keys are strings (#6); a missing key is 0
+    const mine = state.votes.mine[String(card.id)] ?? 0;
+    const count = el("p", `${votes} ${votes === 1 ? "vote" : "votes"}${mine ? ` (${mine} yours)` : ""}`);
+    count.id = `count-${card.id}`;
+    li.append(count);
+    if (state.phase === "vote") {
+      const vote = el("button", "Vote");
+      vote.id = `vote-${card.id}`;
+      vote.disabled = sending || status !== "connected" || state.votes.left === 0; // a hint over the server's budget, never a substitute
+      vote.onclick = () => send({ type: "vote.cast", id: card.id });
+      li.append(vote);
+      if (mine) {
+        const unvote = el("button", "Remove vote");
+        unvote.id = `unvote-${card.id}`;
+        unvote.disabled = sending || status !== "connected";
+        unvote.onclick = () => send({ type: "vote.remove", id: card.id });
+        li.append(unvote);
+      }
+    }
+  }
   if (write && card.mine) {
     const edit = el("button", "Edit");
     edit.id = `edit-${card.id}`;
@@ -417,9 +458,29 @@ function renderClusters(edit) {
   return section;
 }
 
+// discuss and done: every card in one list, count descending then id ascending, sorted from state on every render.
+function renderRanking() {
+  const section = el("section");
+  section.className = "ranking";
+  const h2 = el("h2", "Ranked by votes");
+  h2.id = "ranking-heading";
+  section.setAttribute("aria-labelledby", h2.id);
+  const list = el("ol");
+  list.id = "ranking";
+  const count = (c) => state.votes.counts[String(c.id)] ?? 0;
+  list.append(...[...state.cards].sort((a, b) => count(b) - count(a) || a.id - b.id).map((c) => renderCard(c, false)));
+  section.append(h2, list);
+  return section;
+}
+
 function renderRoom() {
   const header = el("header");
   header.append(el("span", `Code: ${code}`), el("span", `Phase: ${state ? state.phase : ""}`), el("span", `Status: ${status}`));
+  if (state?.phase === "vote") { // the budget, from state on every render; on screen while main scrolls inside (#8)
+    const left = el("span", `Votes left: ${state.votes.left}`);
+    left.id = "votes-left";
+    header.append(left);
+  }
   const next = state && PHASES[PHASES.indexOf(state.phase) + 1]; // undefined in done
   if (next && localStorage.getItem(key("facilitator_token"))) {
     const button = el("button", `Next: ${next}`);
@@ -429,12 +490,17 @@ function renderRoom() {
   }
   // The board: composers and Edit/Delete in write, read-only in reveal. From cluster on it is grouped:
   // unclustered cards in their columns, boxes below, editable in cluster only (#5's wider server window
-  // is a margin). #10 (vote, discuss) and #11 (discuss, done) build on the grouped board, from `state`.
+  // is a margin). In vote the cards carry the vote controls; in discuss and done the board is one list
+  // ranked by votes (#11 adds the decision pad below it). All from `state`.
   const main = el("main");
   if (state) {
     const write = state.phase === "write";
-    main.append(el("h1", state.phase), ...Object.keys(COLUMNS).map((column) => renderColumn(column, write)));
-    if (PHASES.indexOf(state.phase) >= PHASES.indexOf("cluster")) main.append(renderClusters(state.phase === "cluster"));
+    main.append(el("h1", state.phase));
+    if (PHASES.indexOf(state.phase) >= PHASES.indexOf("discuss")) main.append(renderRanking());
+    else {
+      main.append(...Object.keys(COLUMNS).map((column) => renderColumn(column, write)));
+      if (PHASES.indexOf(state.phase) >= PHASES.indexOf("cluster")) main.append(renderClusters(state.phase === "cluster"));
+    }
   }
   app.append(header, main);
 }

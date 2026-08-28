@@ -58,6 +58,7 @@ label {
 
 input,
 textarea,
+select,
 button {
   font: inherit;
   padding: var(--space-1) var(--space-2);
@@ -65,10 +66,15 @@ button {
 }
 
 input,
-textarea {
+textarea,
+select {
   border: thin solid var(--border);
   background: var(--surface);
   color: var(--text);
+}
+
+select {
+  max-width: 100%; /* a long cluster name is an option, never a wider card */
 }
 
 textarea {
@@ -105,6 +111,10 @@ main {
   gap: var(--space-3);
 }
 
+section {
+  min-width: 0; /* content wraps inside; nothing widens a column or a box */
+}
+
 ul {
   list-style: none;
   margin: 0;
@@ -120,15 +130,16 @@ li {
   border-radius: var(--radius);
 }
 
-.start li {
+/* The accent follows the card: a Start card in a cluster box stays green. */
+li.start {
   border-left-color: var(--start);
 }
 
-.stop li {
+li.stop {
   border-left-color: var(--stop);
 }
 
-.continue li {
+li.continue {
   border-left-color: var(--continue);
 }
 
@@ -145,6 +156,33 @@ li p + p {
 
 li > button {
   margin-top: var(--space-2);
+}
+
+/* Cluster boxes, from cluster on: a wrapping row of surfaces under the Clusters heading. */
+.clusters > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.clusters section {
+  flex: 1 1 calc(10 * var(--space-4)); /* a few boxes per row, the rest wrap */
+  padding: var(--space-2);
+  background: var(--surface);
+  border: thin solid var(--border);
+  border-radius: var(--radius);
+}
+
+.clusters h3 {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+/* The drop target under a dragged card: a column or a box. */
+section.over {
+  border-color: var(--accent);
+  outline: medium dashed var(--accent);
+  outline-offset: calc(-1 * var(--space-1));
 }
 
 @media (min-width: 45em) {
@@ -170,17 +208,27 @@ li > button {
     flex: 1;
     min-height: 0;
     grid-template-columns: repeat(3, minmax(0, 1fr));
-    grid-template-rows: auto minmax(0, 1fr);
+    grid-template-rows: auto;
+    grid-auto-rows: minmax(0, 1fr); /* the columns' row and, from cluster on, the Clusters row share the height */
   }
 
-  main h1 {
+  main h1,
+  .clusters {
     grid-column: 1 / -1;
   }
 
-  section {
+  main > section {
     min-height: 0;
     overflow-y: auto;
     padding: 0 var(--space-2); /* room for the focus outline inside the clip */
+  }
+
+  main > section > h2 { /* in view while its column or the Clusters section scrolls */
+    position: sticky;
+    top: 0;
+    margin: 0;
+    padding: var(--space-2) 0;
+    background: var(--bg);
   }
 }
 

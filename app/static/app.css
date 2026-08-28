@@ -221,6 +221,8 @@ section.over {
     min-height: 0;
     overflow-y: auto;
     padding: 0 var(--space-2); /* room for the focus outline inside the clip */
+    /* Focus scrolling lands below the sticky heading (1.5em + 2 * space-2) with room for the outline. */
+    scroll-padding: calc(1.5em + 3 * var(--space-2)) 0 var(--space-2);
   }
 
   main > section > h2 { /* in view while its column or the Clusters section scrolls */
@@ -228,6 +230,8 @@ section.over {
     top: 0;
     margin: 0;
     padding: var(--space-2) 0;
+    font-size: 1.5em;
+    line-height: 1; /* a deterministic height: what scroll-padding above counts on */
     background: var(--bg);
   }
 }

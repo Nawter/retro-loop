@@ -2,11 +2,12 @@
 
 import secrets
 import sqlite3
+from functools import partial
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from app import db
+from app import cards, db, hub
 
 # Codes get read aloud and typed: no 0/O, no 1/I/l.
 CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
@@ -81,7 +82,8 @@ def join_session(code: str, body: JoinBody) -> dict[str, str]:
 
 
 @router.post("/sessions/{code}/advance")
-def advance_phase(code: str, body: AdvanceBody) -> dict[str, str]:
+async def advance_phase(code: str, body: AdvanceBody) -> dict[str, str]:
+    """Async so it can await the broadcast; the SQLite work here is microseconds."""
     conn = db.connect()
     try:
         session = _get_session(conn, code)
@@ -94,6 +96,10 @@ def advance_phase(code: str, body: AdvanceBody) -> dict[str, str]:
             conn.execute(
                 "UPDATE sessions SET phase = ? WHERE id = ?", (phase, session["id"])
             )
-        return {"phase": phase}
+        revealed = cards.rows(conn, session["id"]) if phase == "reveal" else []
     finally:
         conn.close()
+    await hub.broadcast(code, {"type": "phase", "phase": phase})  # after the commit
+    for row in revealed:  # everyone now sees every card, `mine` computed per socket
+        await hub.fanout(code, partial(cards.event, row))
+    return {"phase": phase}

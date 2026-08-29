@@ -1,0 +1,267 @@
+:root {
+  --bg: #f5f5f3;
+  --surface: #ffffff;
+  --text: #1f1f1f;
+  --muted: #5f6368;
+  --border: #d0d0cc;
+  --start: #2e7d32;
+  --stop: #c62828;
+  --continue: #1565c0;
+  --accent: #4f46e5;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 16px;
+  --space-4: 24px;
+  --radius: 6px;
+  --font: system-ui, sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #131316;
+    --surface: #1f1f24;
+    --text: #ebebeb;
+    --muted: #a1a1aa;
+    --border: #3a3a42;
+    --start: #66bb6a;
+    --stop: #ef5350;
+    --continue: #64b5f6;
+    --accent: #a5b4fc;
+  }
+}
+
+body {
+  margin: 0;
+  padding: var(--space-3);
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+}
+
+header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-4);
+  padding: var(--space-2) var(--space-3);
+  margin-bottom: var(--space-4);
+  background: var(--surface);
+  border: thin solid var(--border);
+  border-radius: var(--radius);
+}
+
+label {
+  display: block;
+  margin-top: var(--space-3);
+  color: var(--muted);
+}
+
+input,
+textarea,
+select,
+button {
+  font: inherit;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius);
+}
+
+input,
+textarea,
+select {
+  border: thin solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+}
+
+select {
+  max-width: 100%; /* a long cluster name is an option, never a wider card */
+}
+
+textarea {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+}
+
+button {
+  border: thin solid var(--accent);
+  background: var(--accent);
+  color: var(--bg);
+  cursor: pointer;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+form button {
+  margin-top: var(--space-3);
+}
+
+button + button {
+  margin-left: var(--space-2);
+}
+
+/* The board: the sections stack; from 45em up (720 CSS pixels at the default font size,
+   a media query cannot read a token) they sit side by side and scroll inside. */
+main {
+  display: grid;
+  gap: var(--space-3);
+}
+
+section {
+  min-width: 0; /* content wraps inside; nothing widens a column or a box */
+}
+
+ul,
+ol { /* the ranked list shows counts, not numbers */
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+li {
+  margin-top: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface);
+  border: thin solid var(--border);
+  border-left: thick solid;
+  border-radius: var(--radius);
+}
+
+/* The accent follows the card: a Start card in a cluster box stays green. */
+li.start {
+  border-left-color: var(--start);
+}
+
+li.stop {
+  border-left-color: var(--stop);
+}
+
+li.continue {
+  border-left-color: var(--continue);
+}
+
+li p {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+li p + p {
+  margin-top: var(--space-1);
+  color: var(--muted);
+}
+
+li > button {
+  margin-top: var(--space-2);
+}
+
+/* Cluster boxes, from cluster on: a wrapping row of surfaces under the Clusters heading. */
+.clusters > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.clusters section {
+  flex: 1 1 calc(10 * var(--space-4)); /* a few boxes per row, the rest wrap */
+  padding: var(--space-2);
+  background: var(--surface);
+  border: thin solid var(--border);
+  border-radius: var(--radius);
+}
+
+.clusters h3 {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+/* The pad's entries: the accent for both kinds (the tag is the signal), the kind tag above the text and the
+   owner below it muted like a byline. */
+.decisions li {
+  border-left-color: var(--accent);
+}
+
+.decisions li p:first-child {
+  color: var(--muted);
+}
+
+.decisions li p:nth-child(2) {
+  color: var(--text);
+}
+
+/* The drop target under a dragged card: a column or a box. */
+section.over {
+  border-color: var(--accent);
+  outline: medium dashed var(--accent);
+  outline-offset: calc(-1 * var(--space-1));
+}
+
+@media (min-width: 45em) {
+  body {
+    height: 100vh;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+  }
+
+  #app {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+
+  #app > button { /* the home view's Create button: a flex item would stretch */
+    align-self: flex-start;
+  }
+
+  main {
+    flex: 1;
+    min-height: 0;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-rows: auto;
+    grid-auto-rows: minmax(0, 1fr); /* the columns' row and, from cluster on, the Clusters (or ranking) row share the height */
+  }
+
+  main h1,
+  .clusters,
+  .ranking {
+    grid-column: 1 / -1;
+  }
+
+  .decisions { /* the row below the ranking: the pad on two columns, the export (next in DOM order) on the third */
+    grid-column: 1 / 3;
+  }
+
+  main > section {
+    min-height: 0;
+    overflow-y: auto;
+    padding: 0 var(--space-2); /* room for the focus outline inside the clip */
+    /* Focus scrolling lands below the sticky heading (1.5em + 2 * space-2) with room for the outline. */
+    scroll-padding: calc(1.5em + 3 * var(--space-2)) 0 var(--space-2);
+  }
+
+  main > section > h2 { /* in view while its column or the Clusters section scrolls */
+    position: sticky;
+    top: 0;
+    margin: 0;
+    padding: var(--space-2) 0;
+    font-size: 1.5em;
+    line-height: 1; /* a deterministic height: what scroll-padding above counts on */
+    background: var(--bg);
+  }
+}
+
+a {
+  color: var(--accent);
+  overflow-wrap: anywhere;
+}
+
+:focus-visible {
+  outline: medium solid var(--accent);
+  outline-offset: var(--space-1);
+}

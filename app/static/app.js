@@ -10,6 +10,12 @@ let code = (new URLSearchParams(location.search).get("code") || "").toUpperCase(
 let state = null; // the last snapshot, replaced wholesale, with deltas applied to it
 let status = "connecting";
 let socket = null; // set while in the room view, null on the home view
+// Reconnect schedule (#12): the wait before each attempt doubles from 1 s to a 16 s cap, no jitter, never
+// gives up. A snapshot resets it; a page load and a join start it over.
+const RETRY_INITIAL = 1000;
+const RETRY_CAP = 16000;
+let delay = RETRY_INITIAL;
+let timer = null; // the pending attempt, cancelled by a wake or an online event
 let advancing = false; // an advance request is in flight
 let sending = ""; // the type of the card.*/cluster.*/vote.*/decision.* in flight, "" when none: cleared by the next event of its kind, or an error
 let editing = null; // { id, text }: the card whose edit form is open, with the text as typed
@@ -117,6 +123,7 @@ async function advance() {
 
 // One card.*, cluster.*, vote.* or decision.* message; nothing is drawn until its echo, only its buttons go disabled.
 function send(message) {
+  if (socket?.readyState !== WebSocket.OPEN) return offline();
   if (sending) return; // a click on a button the re-render already replaced
   sending = message.type;
   if (sending.startsWith("vote.")) voting = message.id; // what the focus rule and "No votes left" read on the echo
@@ -127,17 +134,32 @@ function send(message) {
 // One card.move. Never gated: a second drop before the first echo sends too, and the server's
 // last write wins (#5). Nothing is drawn until the echo.
 function move(id, cluster_id) {
-  if (status !== "connected") return;
+  if (socket?.readyState !== WebSocket.OPEN) return offline();
   moving = id;
   socket.send(JSON.stringify({ type: "card.move", id, cluster_id }));
 }
 
-function connect() {
-  state = null;
-  status = "connecting";
+// The backstop behind the disabled buttons: a click between a close and the re-render, a requestSubmit(),
+// the console. Nothing is sent, nothing is queued.
+function offline() {
+  say("Not connected, try again");
+  render();
+}
+
+// Opens the socket. A page load or a join starts from nothing; a retry (from the timer or a wake) keeps
+// the last snapshot on screen until the new one replaces it.
+function connect(retry) {
+  clearTimeout(timer); // one socket at a time
+  socket?.close(); // a live socket only when called from the console; its close is ignored below
+  if (!retry) {
+    state = null;
+    status = "connecting";
+    delay = RETRY_INITIAL;
+  }
   const token = localStorage.getItem(key("participant_token"));
   const scheme = location.protocol === "https:" ? "wss:" : "ws:";
   socket = new WebSocket(`${scheme}//${location.host}/ws/${code}?token=${encodeURIComponent(token)}`);
+  const ws = socket; // this attempt, so its close can tell whether it has been replaced
   socket.onmessage = (event) => {
     let message;
     try {
@@ -148,7 +170,13 @@ function connect() {
     switch (message?.type) {
       case "snapshot":
         state = message;
+        if (status === "reconnecting") say("Connected"); // a first connect announces nothing
         status = "connected";
+        delay = RETRY_INITIAL;
+        // A form whose item was deleted while the page was away closes silently, as under decision.deleted
+        if (editing && !state.cards.some((c) => c.id === editing.id)) editing = null;
+        if (renaming && !state.clusters.some((c) => c.id === renaming.id)) renaming = null;
+        if (editingDecision && !state.decisions.some((d) => d.id === editingDecision.id)) editingDecision = null;
         break;
       case "phase":
         state.phase = message.phase;
@@ -244,15 +272,21 @@ function connect() {
     render();
   };
   socket.onclose = (event) => {
+    if (ws !== socket) return; // a socket the page already replaced
+    sending = ""; // nothing sent on this socket can complete
+    advancing = false;
+    moving = voting = focusId = null;
     if (event.code === 1008) { // a bad token or an unknown code, always before the snapshot
       for (const k of ["facilitator_token", "participant_token", "name"]) localStorage.removeItem(key(k));
       socket = null;
       render();
       say("Your session was not recognised, join again");
-    } else { // reconnect is #12; until then a reload is the way back
-      status = "disconnected";
+    } else { // any other close is a gap: the board stays, said once, and the next attempt is on the schedule
+      if (status !== "reconnecting") say("Reconnecting…");
+      status = "reconnecting";
+      timer = setTimeout(() => connect(true), delay);
+      delay = Math.min(delay * 2, RETRY_CAP);
       render();
-      say("disconnected");
     }
   };
   render();
@@ -366,6 +400,7 @@ function renderCard(card, write) {
   if (write && card.mine) {
     const edit = el("button", "Edit");
     edit.id = `edit-${card.id}`;
+    edit.disabled = status !== "connected"; // no form whose Save is dead
     edit.onclick = () => {
       editing = { id: card.id, text: card.text };
       focusId = "edit-text";
@@ -437,6 +472,7 @@ function renderBox(cluster, edit) {
     if (edit) {
       const rename = el("button", "Rename");
       rename.id = `rename-${cluster.id}`;
+      rename.disabled = status !== "connected";
       rename.onclick = () => {
         renaming = { id: cluster.id, name: cluster.name }; // one form at a time: this replaces any other
         focusId = "rename-text";
@@ -557,6 +593,7 @@ function renderDecisions() {
       if (edit) {
         const open = el("button", "Edit");
         open.id = `edit-decision-${d.id}`;
+        open.disabled = status !== "connected";
         open.onclick = () => {
           editingDecision = { id: d.id, kind: d.kind, text: d.text, owner: d.owner ?? "" }; // one form at a time: this replaces any other
           focusId = "edit-decision-text";
@@ -671,6 +708,13 @@ function render() {
   if (node && keep?.start != null) node.setSelectionRange(keep.start, keep.end);
   focusId = null;
 }
+
+// An opened lid or a network coming back retries now rather than up to 16 s from now; the schedule is not reset.
+function wake() {
+  if (socket && socket.readyState > WebSocket.OPEN) connect(true); // in the room view, neither OPEN nor CONNECTING
+}
+document.addEventListener("visibilitychange", () => document.visibilityState === "visible" && wake());
+window.addEventListener("online", wake);
 
 if (code && localStorage.getItem(key("participant_token"))) connect();
 else render();
